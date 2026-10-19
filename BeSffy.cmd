@@ -119,7 +119,7 @@ rem ------------------------------------------------------------
                       (여러 번 적용했으면 최근 것부터 차례로 되돌려 맨 처음 적용 전 상태로)
                       (지운 앱·구성요소·OneDrive 는 되돌리지 않음: 스토어·선택적 기능·복원 지점으로)
       메뉴 3 점검     : 적용한 뒤 지금 상태가 맞는지 점검만 (아무것도 바꾸지 않음, 앱 고르는 창 없음)
-      메뉴 5 일부 옵션만 복구 : 백그라운드가 막힌 스토어 앱을 골라서 다시 허용 (프로그램별로 묶어 보여 줌), 검색 색인 다시 켜기
+      메뉴 5 일부 옵션만 복구 : 백그라운드가 막힌 스토어 앱을 골라서 다시 허용 (프로그램별로 묶어 보여 줌), 검색 색인 다시 켜기, 시작 프로그램 다시 켜기
   - 설치 때만 의미 있는 것(로컬 계정·첫 세팅 화면, TPM 우회, 새 사용자 시작 메뉴·테마, 이미지 압축)은 뺐습니다.
   - 실행 중인 PC 에 그대로 쓰면 곤란한 빌드 항목은 바꿔서 적용합니다:
       · 시작 메뉴 고정 앱 비우기(ConfigureStartPins) → 뺌 (지금 고정해 둔 앱이 사라지므로)
@@ -135,6 +135,8 @@ $Do = [ordered]@{
     Apps             = $true    # 앱 삭제 (미리보기에서 하나씩 고른 것만)
     SystemComponents = $true    # IE 구성요소, 옛 Windows Media Player, PowerShell ISE, 단계 레코더, 수학 입력판, Recall
     Settings         = $true    # 광고·추천·AI·원격 분석 끄기, Edge·앱 백그라운드 끄기, 탐색기 설정 등
+    Startup          = $true    # 시작 프로그램 정리 (미리보기에서 고른 것만 켜고 끔. 작업 관리자 '시작 앱'과 같은 방식)
+    DefenderScan     = $false   # Defender 예약 검사가 CPU 를 평균 20% 까지만 쓰게 (실시간 보호는 그대로). 효과가 PC 마다 달라 기본은 끔 (고르는 창의 검사 기록을 보고 켬)
     UpdateLock       = $true    # 2046년까지 일시정지 + 매일 다시 잠금, 바탕화면 켜기/끄기, 현재 버전 고정
     OneDrive         = $true    # OneDrive 제거 (PC·클라우드의 파일은 지우지 않음)
     DisableSearch    = $true    # 검색 색인(WSearch) 끄기
@@ -275,6 +277,15 @@ function Get-RegValue([string]$root, [string]$key, [string]$name) {
         return New-RegResult $false $false $null $null $_.Exception.Message
     } finally { if ($k) { $k.Close() } }
 }
+# 키 안의 값 이름들 (키가 없으면 아무것도 안 내보냄)
+function Get-RegValueNames([string]$root, [string]$key) {
+    $k = $null
+    try {
+        $base, $pre = Get-RegBase $root
+        $k = $base.OpenSubKey($pre + $key, $false)
+        if ($k) { $k.GetValueNames() }   # 하나씩 내보냄 (부르는 쪽에서 @() 로 받음)
+    } catch {} finally { if ($k) { $k.Close() } }
+}
 function Set-RegDirect([string]$root, [string]$key, [string]$name, [string]$kind, $value) {
     $base, $pre = Get-RegBase $root
     $k = $base.CreateSubKey($pre + $key)
@@ -384,6 +395,17 @@ function Stop-AppProcesses([string[]]$names) {
     }
 }
 function Invoke-WuPause { & (Join-Path $script:ToolsDst 'WU-Pause.ps1') -Force }
+# Defender 예약 검사 설정 (Set-MpPreference: 그룹 정책이 없는 PC 에서 쓰는 Windows 의 기본 방법). 못 읽으면 $null, 이유는 $script:DefenderErr
+function Get-DefenderScanPref {
+    $script:DefenderErr = $null
+    try { $m = Get-MpPreference -ErrorAction Stop } catch { $script:DefenderErr = "$($_.Exception.Message)".Trim(); return $null }
+    if ($null -eq $m.ScanAvgCPULoadFactor) { $script:DefenderErr = '이 Windows 의 Defender 는 이 설정을 지원하지 않음'; return $null }
+    $o = [ordered]@{}; foreach ($k in $DefenderWant.Keys) { $o[$k] = $m.$k }
+    return $o
+}
+function Set-DefenderScanPref($v) {
+    Set-MpPreference -ScanAvgCPULoadFactor ([byte]$v.ScanAvgCPULoadFactor) -DisableCpuThrottleOnIdleScans ([bool]$v.DisableCpuThrottleOnIdleScans) -EnableLowCpuPriority ([bool]$v.EnableLowCpuPriority) -ErrorAction Stop
+}
 function Start-Uninstaller([string]$exe, [string]$arguments) { (Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru -ErrorAction Stop).ExitCode }
 # 서비스 관리자에도 바로 반영 (레지스트리만 바꾸면 다시 시작할 때까지 예전 값으로 동작함)
 function Set-ServiceStartType([string]$name, [string]$scType) { Invoke-Native 'sc.exe' @('config', $name, 'start=', $scType) }
@@ -474,7 +496,8 @@ function New-PickerForm([string]$title, [string]$text, [int]$w, [int]$h, [switch
         # 체크 상자를 빠르게 두 번 누르면 화면과 실제 체크가 어긋나는 WinForms 문제를 막은 트리 (만들기 실패하면 보통 트리)
         if (-not ('BeSffyTree' -as [type])) {
             try {
-                Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop -TypeDefinition @'
+                # WarningAction: public 멤버가 없는 형식이라 Add-Type 이 띄우는 '생성된 유형이 public 메서드…' 경고 숨김 (정상)
+                Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -ErrorAction Stop -WarningAction SilentlyContinue -TypeDefinition @'
 public class BeSffyTree : System.Windows.Forms.TreeView {
     protected override void WndProc(ref System.Windows.Forms.Message m) {
         if (m.Msg == 0x203) {
@@ -583,6 +606,7 @@ function Initialize-Paths {
     $script:DefaultNtUser = Join-Path $defDir 'NTUSER.DAT'
     $script:OptFile = Join-Path $Here 'selected_options.txt'    # 무엇을 적용할지 (창에서 고른 값)
     $script:BgFile  = Join-Path $Here 'selected_bgapps.txt'     # 백그라운드 예외로 둘 앱 (창에서 고른 값)
+    $script:StartupFile = Join-Path $Here 'selected_startup.txt' # 시작 프로그램에서 끄고 켤 것 (창에서 고른 값)
 }
 
 function Initialize-Context {
@@ -600,6 +624,8 @@ function Initialize-Context {
 
     # 백그라운드 예외 목록: 저장해 둔 것(창에서 고른 값)이 있으면 그걸, 없으면 패턴에 맞는 앱을 기본값으로
     $script:BgEmptyLegacy = $false
+    $sp = Read-StartupSelection
+    $script:StartupPlan = if ($null -eq $sp) { @() } else { @($sp) }   # Build-RegItems 가 씀 (아래 Set-BgExtra 안에서)
     $saved = Read-BgSelection
     if ($null -ne $saved) { Set-BgExtra $saved } else { Set-BgExtra (Get-BgDefaultFamilies) }
 }
@@ -789,10 +815,18 @@ function Build-RegItems {
             if ($r.Name -in 'TargetReleaseVersion', 'ProductVersion', 'TargetReleaseVersionInfo') { $r.Skip = '지금 버전 이름(DisplayVersion)을 읽지 못함' }
         }
     }
+
+    # ---- 시작 프로그램 (창에서 바꾼 것만): 작업 관리자와 같은 켜짐/꺼짐 기록. 원래 항목은 지우지 않음 ----
+    foreach ($c in @($script:StartupPlan)) {
+        $t = Get-StartupTarget $c.Id
+        if (-not $t) { continue }
+        Add-RegItem Startup $t.Hive $t.Key $t.Name $t.Kind $(if ($c.Want) { $t.On } else { $t.Off }) "시작 프로그램 $(if ($c.Want) { '켬' } else { '끔' }): $($c.Label)" -CurOnly
+        if (-not $t.Exists) { $script:Reg[$script:Reg.Count - 1].Skip = "시작 프로그램 '$($c.Label)' 이 지금은 없음 (지웠거나 이름이 바뀜)" }
+    }
 }
 
-$CatLabels = @{ Settings = '설정·정책'; DarkMode = '다크 모드'; Search = '검색 색인'; Update = '업데이트 잠금'; OneDrive = 'OneDrive' }
-$CatOrder  = [Collections.Generic.List[string]]@('Settings', 'DarkMode', 'Search', 'Update', 'OneDrive')
+$CatLabels = @{ Settings = '설정·정책'; DarkMode = '다크 모드'; Search = '검색 색인'; Update = '업데이트 잠금'; OneDrive = 'OneDrive'; Startup = '시작 프로그램' }
+$CatOrder  = [Collections.Generic.List[string]]@('Settings', 'DarkMode', 'Search', 'Update', 'OneDrive', 'Startup')
 
 # 이번에 다룰 항목. $flags: 무엇을 적용(점검)하는지 (Settings/DarkMode/DisableSearch/UpdateLock/OneDrive)
 function Get-ActiveRegItems($flags) {
@@ -800,14 +834,14 @@ function Get-ActiveRegItems($flags) {
         -not $_.Skip -and (
             ($_.Cat -eq 'Settings' -and $flags.Settings) -or ($_.Cat -eq 'DarkMode' -and $flags.DarkMode) -or
             ($_.Cat -eq 'Search' -and $flags.DisableSearch) -or ($_.Cat -eq 'Update' -and $flags.UpdateLock) -or
-            ($_.Cat -eq 'OneDrive' -and $flags.OneDrive))
+            ($_.Cat -eq 'OneDrive' -and $flags.OneDrive) -or ($_.Cat -eq 'Startup' -and $flags.Startup))
     } | Where-Object {
         # 서비스 설정은 그 서비스가 있을 때만 (없는 서비스 키를 새로 만들면 부팅 때 오류가 남)
         $_.Key -notlike 'SYSTEM\CurrentControlSet\Services\*' -or (Get-RegValue $HKLM $_.Key '').KeyExists
     })
 }
 function Get-SkippedRegItems($flags) {
-    @($script:Reg | Where-Object { $_.Skip -and ($_.Cat -ne 'Update' -or $flags.UpdateLock) })
+    @($script:Reg | Where-Object { $_.Skip -and ($_.Cat -ne 'Update' -or $flags.UpdateLock) -and ($_.Cat -ne 'Startup' -or $flags.Startup) })
 }
 
 # ============================== 레지스트리 도구 ==============================
@@ -857,6 +891,7 @@ function Test-SameValue($cur, $r) {
         'DWord'       { return ($cur.Kind -eq 'DWord') -and (([int64]$cur.Value -band 4294967295) -eq ([int64]$r.Value -band 4294967295)) }
         'String'      { return ($cur.Kind -eq 'String') -and ("$($cur.Value)" -eq "$($r.Value)") }
         'MultiString' { return ($cur.Kind -eq 'MultiString') -and ((@($cur.Value) -join "`n") -eq (@($r.Value) -join "`n")) }
+        'Binary'      { return ($cur.Kind -eq 'Binary') -and ((@($cur.Value) -join ',') -eq (@($r.Value) -join ',')) }
     }
     return $false
 }
@@ -909,7 +944,7 @@ function Build-ApplyLines($items, [switch]$Default) {
     foreach ($g in (@($items) | Where-Object Kind -ne 'Track' | Group-Object { "$($_.Hive)|$($_.Key)" })) {
         $first = $g.Group[0]
         $path  = (Get-RootName $first.Hive -Default:$Default) + '\' + $first.Key
-        $vals  = @($g.Group | Where-Object { $_.Kind -in 'DWord', 'String', 'MultiString', 'DeleteValue' })
+        $vals  = @($g.Group | Where-Object { $_.Kind -in 'DWord', 'String', 'MultiString', 'Binary', 'DeleteValue' })
         if ($g.Group | Where-Object Kind -eq 'DeleteKey') { $lines.Add("[-$path]"); $lines.Add('') }
         if ($vals.Count -or ($g.Group | Where-Object Kind -eq 'EnsureKey')) {
             $lines.Add("[$path]")
@@ -1027,7 +1062,7 @@ function Get-AppLabel([string]$name) {
     if ($a) { $a.Label } else { $name }
 }
 # Get-AppxPackage 는 디스크/DB I/O 가 커서 한 실행 안에서 한 번만 조회해 재사용 (앱을 지운 뒤에는 Clear-AppxCache 로 비움)
-function Clear-AppxCache { $script:_axAll = $null; $script:_axCur = $null; $script:_startNames = $null }
+function Clear-AppxCache { $script:_axAll = $null; $script:_axCur = $null; $script:_startNames = $null; $script:_axTasks = $null }
 # 주의: 결과를 풀어서 내보냄 (return ,$x 로 내보내면 부르는 쪽 @() 이 '목록 하나짜리 목록'이 돼서 필터가 전부 빗나감)
 function Get-AppxAll { if ($null -eq $script:_axAll) { $script:_axAll = @(Get-AppxPackage -AllUsers -ErrorAction Stop) }; $script:_axAll }
 function Get-AppxCur { if ($null -eq $script:_axCur) { $script:_axCur = @(Get-AppxPackage -ErrorAction Stop) }; $script:_axCur }
@@ -1077,6 +1112,8 @@ $OptLabels = [ordered]@{
     Apps             = '앱 삭제 (다음 창에서 지울 앱을 하나씩 고름)'
     SystemComponents = '시스템 구성요소 삭제 (IE·옛 미디어 플레이어·PowerShell ISE·단계 레코더·수학 입력판·Recall)'
     Settings         = '설정·정책 (광고·추천·AI·원격 분석 끄기, 잠금 화면 없애기, 탐색기·백그라운드 등)'
+    Startup          = '시작 프로그램 정리 (다음 창에서 로그인할 때 자동으로 켜질 프로그램을 고름)'
+    DefenderScan     = '[베타기능] Defender 예약 검사 가볍게 (체크하면 다음 창에서 이 PC 에 맞는지 알려 주고 할지 물어봄. 실시간 보호는 그대로)'
     UpdateLock       = '업데이트 잠금 (자동 업데이트 끄기·현재 버전 고정·바탕화면 켜기/끄기)'
     OneDrive         = 'OneDrive 제거 (PC·클라우드의 파일은 지우지 않음)'
     DarkMode         = '다크 모드'
@@ -1269,6 +1306,232 @@ function Show-BgPicker($candidates, [string[]]$preselected, [string[]]$defaults,
     return ,$picked
 }
 
+# ============================== 시작 프로그램 ==============================
+# 작업 관리자 '시작 앱'과 같은 방식: 원래 항목(자동 실행 값·시작 폴더 파일·스토어 앱 시작 작업)은 그대로 두고 켜짐/꺼짐만 기록
+$StartupApproved = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved'
+$StartupSrc = [ordered]@{
+    'run|HKCU'    = @{ Hive = 'HKCU'; Key = 'Software\Microsoft\Windows\CurrentVersion\Run';             Appr = "$StartupApproved\Run";   Where = '자동 실행 (이 사용자)' }
+    'run|HKLM'    = @{ Hive = 'HKLM'; Key = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run';             Appr = "$StartupApproved\Run";   Where = '자동 실행 (모든 사용자)' }
+    'run32|HKLM'  = @{ Hive = 'HKLM'; Key = 'SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'; Appr = "$StartupApproved\Run32"; Where = '자동 실행 (모든 사용자, 32비트)' }
+    'folder|HKCU' = @{ Hive = 'HKCU'; Env = 'APPDATA';     Sub = 'Microsoft\Windows\Start Menu\Programs\Startup'; Appr = "$StartupApproved\StartupFolder"; Where = '시작 폴더 (이 사용자)' }
+    'folder|HKLM' = @{ Hive = 'HKLM'; Env = 'ProgramData'; Sub = 'Microsoft\Windows\Start Menu\Programs\StartUp'; Appr = "$StartupApproved\StartupFolder"; Where = '시작 폴더 (모든 사용자)' }
+}
+# 켜짐/꺼짐 기록 값: 첫 바이트가 홀수면 꺼짐 (작업 관리자가 쓰는 형식. 뒤 8바이트는 끈 시각인데 0 이어도 됨)
+$StartupOnBytes  = [byte[]](2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+$StartupOffBytes = [byte[]](3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+# 스토어 앱 시작 작업의 켜짐/꺼짐 (State: 1 사용자가 끔, 2 켬, 0·3 꺼짐, 4 정책으로 켬)
+$AppxStartupKey = 'Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\SystemAppData'
+# 꺼 두면 장치·보안 기능이 안 될 수 있어 켜 두기를 권하는 것 (★). 그 밖에 백그라운드 예외의 추천 종류(클라우드·메신저 등)도 ★
+$StartupKeep = @('*SecurityHealth*', '*ctfmon*', '*RtkAud*', '*RtkNGUI*', '*Realtek*', '*RAVBg*', '*RAVCpl*', '*igfx*', '*NVIDIA*', '*nvtray*', '*NvBackend*',
+                 '*\AMD\*', '*AMD Software*', '*AMDRS*', '*Radeon*', '*Synaptics*', '*SynTP*', '*ETDCtrl*', '*Elantech*', '*Logitech*', '*LogiOptions*', '*LGHUB*', '*Bluetooth*')
+$StartupNotice = '※ 체크를 풀면 Windows 에 로그인할 때 자동으로 켜지지 않아요. 프로그램은 지워지지 않고, 필요할 때 직접 열면 돼요. ★ 표시(보안·드라이버·클라우드 동기화·메신저 등)는 끄면 알림·동기화가 안 되거나 장치 기능이 제대로 동작하지 않을 수 있어서 켜 두기를 권해요.'
+
+function Get-StartupDir($s) { Join-Path ([Environment]::GetEnvironmentVariable($s.Env)) $s.Sub }
+function Test-ApprovedOn($cur) { -not ($cur.Exists -and $cur.Kind -eq 'Binary' -and @($cur.Value).Count -and ($cur.Value[0] -band 1)) }
+# 스토어 앱의 시작 작업 (매니페스트의 StartupTask). 한 작업 안에서 한 번만 읽음
+function Get-AppxStartupTasks {
+    if ($null -ne $script:_axTasks) { return $script:_axTasks }
+    $out = New-Object System.Collections.Generic.List[object]
+    $pk = @(); try { $pk = @(Get-AppxCur) } catch {}
+    foreach ($p in $pk) {
+        if ($p.IsFramework -or -not "$($p.InstallLocation)") { continue }
+        $x = $null; try { $x = [IO.File]::ReadAllText((Join-Path "$($p.InstallLocation)" 'AppxManifest.xml')) } catch { continue }
+        foreach ($t in [regex]::Matches($x, '<(?:\w+:)?StartupTask\b[^>]*>')) {
+            $a = @{}; foreach ($g in [regex]::Matches($t.Value, '(\w+)="([^"]*)"')) { $a[$g.Groups[1].Value] = $g.Groups[2].Value }
+            if (-not $a.TaskId) { continue }
+            $out.Add([pscustomobject]@{ Family = "$($p.PackageFamilyName)"; Name = "$($p.Name)"; TaskId = $a.TaskId; Enabled = ($a.Enabled -eq 'true'); DisplayName = "$($a.DisplayName)" })
+        }
+    }
+    $script:_axTasks = $out.ToArray()
+    return $script:_axTasks
+}
+# id(종류|위치|이름) → 켜짐/꺼짐을 적는 곳, 원래 항목이 아직 있는지
+function Get-StartupTarget([string]$id) {
+    $p = $id -split '\|', 3
+    if ($p.Count -lt 3) { return $null }
+    if ($p[0] -eq 'appx') {
+        $has = $true; try { $has = [bool](@(Get-AppxCur) | Where-Object PackageFamilyName -eq $p[1]) } catch {}
+        return [pscustomobject]@{ Hive = 'HKCU'; Key = "$AppxStartupKey\$($p[1])\$($p[2])"; Name = 'State'; Kind = 'DWord'; On = 2; Off = 1; Exists = $has }
+    }
+    $s = $StartupSrc["$($p[0])|$($p[1])"]
+    if (-not $s) { return $null }
+    $has = if ($s.Key) { (Get-RegValue (Get-RootName $s.Hive) $s.Key $p[2]).Exists } else { Test-Path -LiteralPath (Join-Path (Get-StartupDir $s) $p[2]) }
+    [pscustomobject]@{ Hive = $s.Hive; Key = $s.Appr; Name = $p[2]; Kind = 'Binary'; On = $StartupOnBytes; Off = $StartupOffBytes; Exists = [bool]$has }
+}
+# 지금 켜져 있는지 ($null = 원래 항목이 없음)
+function Get-StartupNow([string]$id) {
+    $t = Get-StartupTarget $id
+    if (-not $t -or -not $t.Exists) { return $null }
+    $cur = Get-RegValue (Get-RootName $t.Hive) $t.Key $t.Name
+    if ($t.Kind -ne 'DWord') { return (Test-ApprovedOn $cur) }
+    if ($cur.Exists) { return ((([int64]$cur.Value -band 4294967295) -in 2, 4)) }
+    $p = $id -split '\|', 3
+    return [bool](@(Get-AppxStartupTasks) | Where-Object { $_.Family -eq $p[1] -and $_.TaskId -eq $p[2] -and $_.Enabled })
+}
+# 알기 쉬운 이름: 실행 파일 설명(예: Realtek HD Audio ...)이 있으면 그걸 앞에
+function Get-StartupLabel([string]$name, [string]$cmd) {
+    $exe = if ($cmd -match '^\s*"([^"]+)"') { $Matches[1] } elseif ($cmd -match '^\s*([^"]+?\.exe)\b') { $Matches[1] } else { '' }
+    if ($exe) {
+        try {
+            $f = [Environment]::ExpandEnvironmentVariables($exe)
+            if (Test-Path -LiteralPath $f -PathType Leaf) { $d = "$((Get-Item -LiteralPath $f).VersionInfo.FileDescription)".Trim(); if ($d -and $d -ne $name) { return "$d ($name)" } }
+        } catch {}
+    }
+    return $name
+}
+function Get-StartupKind([string]$text) {
+    foreach ($pt in $StartupKeep) { if ($text -like $pt) { return '보안·장치' } }
+    foreach ($w in ($text -split '[\s\\/"]+' | Where-Object { $_ })) { $k = Get-BgKind $w; if ($k) { return $k } }
+    return ''
+}
+function New-StartupItem([string]$id, [string]$label, [string]$detail, [string]$where, [bool]$on, [string]$extra) {
+    $kind = Get-StartupKind "$label $detail $extra"
+    [pscustomobject]@{ Id = $id; Label = $label; Detail = $detail; Where = $where; On = $on; Rec = [bool]$kind; Kind = $kind }
+}
+# 이 PC 의 시작 프로그램 전부 (켜진 것·꺼진 것)
+function Get-StartupItems {
+    $out = New-Object System.Collections.Generic.List[object]
+    foreach ($k in $StartupSrc.Keys) {
+        $s = $StartupSrc[$k]; $root = Get-RootName $s.Hive
+        if ($s.Key) {
+            foreach ($n in @(Get-RegValueNames $root $s.Key)) {
+                if (-not $n) { continue }
+                $cmd = "$((Get-RegValue $root $s.Key $n).Value)"
+                $out.Add((New-StartupItem "$k|$n" (Get-StartupLabel $n $cmd) $cmd $s.Where (Test-ApprovedOn (Get-RegValue $root $s.Appr $n)) $n))
+            }
+        } else {
+            foreach ($f in @(Get-ChildItem -LiteralPath (Get-StartupDir $s) -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'desktop.ini' })) {
+                $tgt = if ($f.Extension -eq '.lnk') { Get-LnkTarget $f.FullName } else { $f.FullName }
+                $out.Add((New-StartupItem "$k|$($f.Name)" (Get-StartupLabel $f.BaseName $(if ($tgt) { "`"$tgt`"" })) $tgt $s.Where (Test-ApprovedOn (Get-RegValue $root $s.Appr $f.Name)) $f.Name))
+            }
+        }
+    }
+    foreach ($t in @(Get-AppxStartupTasks)) {
+        $st = Get-RegValue (Get-RootName 'HKCU') "$AppxStartupKey\$($t.Family)\$($t.TaskId)" 'State'
+        $on = if ($st.Exists) { (([int64]$st.Value -band 4294967295) -in 2, 4) } else { $t.Enabled }
+        $label = if ($t.DisplayName -and $t.DisplayName -notmatch '^ms-resource:') { $t.DisplayName } else { Get-BgLabel $t.Name $t.Family }
+        $out.Add((New-StartupItem "appx|$($t.Family)|$($t.TaskId)" $label $t.Family '스토어 앱' $on $t.Name))
+    }
+    return $out.ToArray()   # 하나씩 내보냄 (부르는 쪽에서 @() 로 받음. ,배열 로 내보내면 @() 가 한 번 더 감싸 버림)
+}
+# 고른 값 파일: off/on <탭> id <탭> 이름. 아직 안 골랐으면 $null
+function Read-StartupSelection {
+    if (-not (Test-Path -LiteralPath $script:StartupFile)) { return $null }
+    $out = @()
+    foreach ($l in ((Read-TextFile $script:StartupFile) -split "\r?\n")) {
+        if ($l -match '^(on|off)\t([^\t]+)\t?(.*)$') { $out += [pscustomobject]@{ Id = $Matches[2]; Want = ($Matches[1] -eq 'on'); Label = $Matches[3] } }
+    }
+    return ,$out
+}
+function Save-StartupSelection($plan) {
+    $lines = @("# 시작 프로그램에서 바꿀 것 ($(Get-Date -Format 'yyyy-MM-dd HH:mm')). off = 로그인할 때 안 켜짐, on = 다시 켬. 다시 고르려면 메뉴 1(미리보기)을 다시 실행하세요.") +
+             @(@($plan) | ForEach-Object { "$(if ($_.Want) { 'on' } else { 'off' })`t$($_.Id)`t$($_.Label)" })
+    Write-TextFile $script:StartupFile (($lines -join "`r`n") + "`r`n")
+}
+# 창의 처음 체크: 지금 상태, 전에 골라 둔 것이 있으면 그 값
+function Get-StartupWant($items, $saved) {
+    $w = @{}; foreach ($it in $items) { $w[$it.Id] = [bool]$it.On }
+    foreach ($c in @($saved)) { if ($c -and $w.ContainsKey($c.Id)) { $w[$c.Id] = [bool]$c.Want } }
+    return $w
+}
+# 창에서 고른 것 중 지금 상태와 다른 것 = 바꿀 것
+function Get-StartupChanges($items, $pick) {
+    @($items | Where-Object { [bool]$pick[$_.Id] -ne [bool]$_.On } | ForEach-Object { [pscustomobject]@{ Id = $_.Id; Want = [bool]$pick[$_.Id]; Label = $_.Label } })
+}
+function Set-StartupPlan($plan) { $script:StartupPlan = @($plan); Build-RegItems }
+# 시작 프로그램 고르는 창. $want: id → 켜 둘지. 확인 → 같은 형식의 새 표, 취소·닫기 → $null.  -Restore: 메뉴 5 (꺼진 것만, 체크 = 다시 켬)
+function Show-StartupPicker($items, $want, [switch]$Restore) {
+    $title = if ($Restore) { '시작 프로그램 다시 켜기 - BeSffy' } else { '시작 프로그램 고르기 - BeSffy' }
+    $text = if ($Restore) { "지금 로그인할 때 켜지지 않는 프로그램이에요. 다시 켤 것만 체크하세요. (다음 로그인부터 자동으로 켜져요)" }
+            else { "로그인할 때 자동으로 켜 둘 프로그램만 체크하세요. 지금 상태대로 체크돼 있어요.`n취소하면 이번 작업을 멈추고 아무것도 저장하지 않아요." }
+    $p = New-PickerForm $title $text 720 660 -Notice $StartupNotice
+    $f = $p.Form; $list = $p.List
+    foreach ($it in $items) {
+        $i = $list.Items.Add(("{0}{1}   [{2}]   {3}" -f $(if ($it.Rec) { '★ ' } else { '' }), $it.Label, $it.Where, $it.Detail))
+        $list.SetItemChecked($i, [bool]$want[$it.Id])
+    }
+    (Add-PickerButton $p 'Left' '모두 켜기').Add_Click({ Set-AllChecked $list $true })
+    (Add-PickerButton $p 'Left' '모두 끄기').Add_Click({ Set-AllChecked $list $false })
+    (Add-PickerButton $p 'Left' '처음대로').Add_Click({ for ($i = 0; $i -lt $list.Items.Count; $i++) { $list.SetItemChecked($i, [bool]$want[$items[$i].Id]) } })
+    [void](Add-PickerButton $p 'Right' '확인' 'OK')
+    [void](Add-PickerButton $p 'Right' '취소' 'Cancel')
+    $res = Show-PickerForm $p
+    $out = @{}; for ($i = 0; $i -lt @($items).Count; $i++) { $out[$items[$i].Id] = [bool]$list.GetItemChecked($i) }
+    $f.Dispose()
+    if ("$res" -ne 'OK') { return $null }
+    return $out
+}
+
+# ============================== Defender 예약 검사 ==============================
+# 예약 검사가 CPU 를 평균 20% 까지만 쓰게 (기본 50%). Windows 기본값은 'PC 가 쉴 때는 제한 없이 검사'라 그것도 끔.
+# 실시간 보호(파일을 열 때 검사)는 그대로라 보안은 같고, 예약 검사가 조금 더 오래 걸림
+$DefenderWant = [ordered]@{ ScanAvgCPULoadFactor = 20; DisableCpuThrottleOnIdleScans = $false; EnableLowCpuPriority = $true }
+function Test-DefenderWanted($p) { [bool]($p -and [int]$p.ScanAvgCPULoadFactor -eq 20 -and -not [bool]$p.DisableCpuThrottleOnIdleScans -and [bool]$p.EnableLowCpuPriority) }
+function Format-DefenderPref($p) { "CPU 평균 $($p.ScanAvgCPULoadFactor)% / PC 가 쉴 때도 제한 $(YesNo (-not [bool]$p.DisableCpuThrottleOnIdleScans)) / 낮은 우선순위 $(YesNo ([bool]$p.EnableLowCpuPriority))" }
+# 검사 한 번: 시작 시각, 걸린 시간 (끝 시각이 시작보다 앞이면 아직 검사 중이거나 중간에 멈춘 것)
+function Get-ScanSeconds($a, $b) { if ($a -is [datetime] -and $b -is [datetime] -and $a.Year -ge 2000 -and $b -ge $a) { [int]($b - $a).TotalSeconds } }
+function Format-Duration([int]$s) { "$(if ($s -ge 60) { "$([Math]::Floor($s / 60))분 " })$($s % 60)초" }
+function Format-ScanRun($a, $b) {
+    if (-not ($a -is [datetime]) -or $a.Year -lt 2000) { return '기록 없음' }
+    $s = Get-ScanSeconds $a $b
+    $a.ToString('yyyy-MM-dd HH:mm') + $(if ($null -ne $s) { ", $(Format-Duration $s) 걸림" })
+}
+# 이 PC 에 맞는지 (사람이 할지 말지 정할 수 있게 고르는 창·미리보기에 보여 줌). $p = Get-DefenderScanPref 결과
+# 돌려줌: @{ Scan = 검사 기록 한 줄(못 읽으면 $null); Now = 지금 설정; Rec = 'on'(가볍게 추천) / 'off'(그대로 추천) / $null(모름); Hint = 이유 }
+function Get-DefenderAdvice($p) {
+    $st = $null; try { $st = Get-MpComputerStatus -ErrorAction Stop } catch {}
+    $scan = $null; $sec = $null
+    if ($st) {
+        $scan = "마지막 빠른 검사: $(Format-ScanRun $st.QuickScanStartTime $st.QuickScanEndTime)  /  전체 검사: $(Format-ScanRun $st.FullScanStartTime $st.FullScanEndTime)"
+        $sec = Get-ScanSeconds $st.QuickScanStartTime $st.QuickScanEndTime
+    }
+    # shortcut: 빠른 검사에 걸린 시간 하나로만 판단 (검사 중 CPU 사용률은 Windows 가 기록을 안 남김), 추천이 자주 틀린다는 말이 나오면 CPU 코어 수도 같이 봄
+    $rec, $hint = if (Test-DefenderWanted $p) { 'on', '이미 가볍게 설정돼 있어요. 그대로 "가볍게 하기"를 고르면 돼요.' }
+        elseif ($null -eq $sec) { $null, '검사에 걸린 시간을 알 수 없어서 이 PC 에 맞는지 판단하기 어려워요. 자리를 비웠을 때 팬이 자주 돌거나, 검사 중에 버벅인 적이 있으면 해 볼 만해요.' }
+        elseif ($sec -le 60) { 'off', "이 PC 는 빠른 검사가 $(Format-Duration $sec) 만에 끝나서 가볍게 해도 체감 차이가 거의 없어요. '그대로 두기'를 권해요." }
+        else { 'on', "이 PC 는 빠른 검사가 $(Format-Duration $sec) 걸려요. 가볍게 하면 검사하는 동안 덜 버벅여요. '가볍게 하기'를 권해요." }
+    @{ Scan = $scan; Now = "지금: $(Format-DefenderPref $p)"; Rec = $rec; Hint = $hint }
+}
+# 확인 → $true(가볍게) / $false(그대로), 취소·닫기 → $null. 추천 쪽을 미리 골라 두고 '← 이 PC 에 추천' 표시 (추천이 없으면 체크한 대로 가볍게)
+function Show-DefenderPicker($a) {
+    $text = "[베타기능] Defender 예약 검사를 가볍게 할지 고르세요. 실시간 보호는 어느 쪽이든 그대로예요.`n" + ((@($a.Scan, $a.Now) | Where-Object { $_ }) -join "`n")
+    $tagOn = if ($a.Rec -eq 'on') { '   ← 이 PC 에 추천' } else { '' }
+    $tagOff = if ($a.Rec -eq 'off') { '   ← 이 PC 에 추천' } else { '' }
+    $p = New-PickerForm '[베타기능] Defender 예약 검사 - BeSffy' $text 620 440 -Notice "※ $($a.Hint)" -Radio @(
+        "가볍게 하기$tagOn`n예약 검사가 CPU 를 평균 20% 까지만 쓰고, PC 가 쉴 때도 제한해요.`n대신 검사가 조금 더 오래 걸려요.",
+        "그대로 두기  (Windows 기본)$tagOff`nDefender 설정을 바꾸지 않아요.")
+    $on = $a.Rec -ne 'off'
+    $p.Radios[0].Checked = $on; $p.Radios[1].Checked = (-not $on)
+    [void](Add-PickerButton $p 'Right' '확인' 'OK')
+    [void](Add-PickerButton $p 'Right' '취소' 'Cancel')
+    $res = Show-PickerForm $p
+    $out = [bool]$p.Radios[0].Checked
+    $p.Form.Dispose()
+    if ("$res" -ne 'OK') { return $null }
+    return $out
+}
+# 미리보기(또는 아직 안 골랐을 때 적용)에서 설정 창에 Defender 를 체크했으면, 이 PC 에 맞는지 알려 주고 할지 말지 고르게 함
+# 돌려줌: 골랐거나 건너뛰었으면 $true, 창에서 취소했으면 $false (부르는 쪽이 작업 전체를 멈춤). Defender 를 못 읽으면 창 없이 넘어감 (적용할 때 건너뜀)
+function Select-DefenderOption($flags) {
+    if (-not $flags.DefenderScan) { return $true }
+    $dp = Get-DefenderScanPref
+    if ($null -eq $dp) { return $true }
+    Head '[베타기능] Defender 예약 검사 (가볍게 / 그대로)'
+    $a = Get-DefenderAdvice $dp
+    Say "  이 PC 에 맞는지 알려 주는 창이 열려요. ($($a.Hint))"
+    $r = Show-DefenderPicker $a
+    if ($null -eq $r) { Say '  Defender 고르기를 취소했어요.'; return $false }
+    $flags['DefenderScan'] = [bool]$r
+    Say "  Defender 예약 검사: $(if ($r) { '가볍게 하기' } else { '그대로 두기 (적용할 항목에서 빠짐. Defender 는 건드리지 않음)' })"
+    return $true
+}
+function Set-DefenderScan {
+    try { Set-DefenderScanPref $DefenderWant } catch { Warn "Defender 예약 검사 설정을 바꾸지 못했어요: $("$($_.Exception.Message)".Trim())"; return }
+    $p = Get-DefenderScanPref
+    if (Test-DefenderWanted $p) { Say "  Defender 예약 검사: $(Format-DefenderPref $p)" }
+    else { Warn "Defender 예약 검사 설정이 들어가지 않았어요 (지금: $(if ($p) { Format-DefenderPref $p } else { $script:DefenderErr })). 그룹 정책이나 다른 관리 도구가 정하고 있을 수 있어요." }
+}
+
 # ============================== 시스템 구성요소 ==============================
 $CapPatterns = [ordered]@{
     'Browser.InternetExplorer*'         = 'Internet Explorer 구성요소 (Edge 의 IE 모드는 그대로)'
@@ -1416,14 +1679,16 @@ function Get-AppliedInfo {
     $bks = @(Get-Backups)
     if (-not $bks.Count) { return $null }
     $flags = [ordered]@{}; foreach ($k in $Do.Keys) { $flags[$k] = $false }
-    $apps = @(); $def = $false; $skippedOd = $false; $bgApps = $null
+    $apps = @(); $def = $false; $skippedOd = $false; $bgApps = $null; $su = [ordered]@{}
     foreach ($b in $bks) {
         $st = Read-State $b.FullName
         foreach ($k in @($flags.Keys)) {
-            # 예전 형식 백업(Applied 없음): 그때 설정과 같다고 봄
-            $v = if ($st.Applied -and $null -ne $st.Applied.$k) { [bool]$st.Applied.$k } else { [bool]$Do[$k] }
+            # 예전 형식 백업(Applied 없음): 그때 설정과 같다고 봄. 나중에 생긴 항목(시작 프로그램·Defender)은 그때 없었으니 안 한 것으로
+            $v = if ($st.Applied -and $null -ne $st.Applied.$k) { [bool]$st.Applied.$k } elseif ($k -in 'Startup', 'DefenderScan') { $false } else { [bool]$Do[$k] }
             if ($v) { $flags[$k] = $true }
         }
+        # 시작 프로그램: 적용마다 바꾼 것 (같은 항목은 나중 것이 지금 값)
+        if ($st.PSObject.Properties['Startup']) { foreach ($c in @($st.Startup)) { if ($c -and $c.Id) { $su["$($c.Id)"] = [pscustomobject]@{ Id = "$($c.Id)"; Want = [bool]$c.Want; Label = "$($c.Label)" } } } }
         # 메뉴 5 로 검색 색인을 다시 켰으면 그 뒤로는 '검색 색인 끄기'를 점검하지 않음 (나중 적용에서 다시 끄면 다시 점검)
         if (Test-Path -LiteralPath (Join-Path $b.FullName 'search_on.txt')) { $flags['DisableSearch'] = $false }
         if ($st.DefaultUser) { $def = $true }
@@ -1437,7 +1702,7 @@ function Get-AppliedInfo {
     }
     [pscustomobject]@{ Count = $bks.Count; Latest = $bks[-1].Name; Flags = $flags
                        Apps = @($apps | Where-Object { $AppIgnore -notcontains $_ } | Sort-Object -Unique)
-                       DefaultUser = $def; OneDriveSkipped = $skippedOd; BgApps = $bgApps }
+                       DefaultUser = $def; OneDriveSkipped = $skippedOd; BgApps = $bgApps; Startup = @($su.Values) }
 }
 function Write-Report([string]$kind, [string]$title, [string[]]$extra) {
     $file = Join-Path $script:ReportDir "${kind}_$($script:Stamp).txt"
@@ -1506,7 +1771,7 @@ function Invoke-Report {
         else { Say '  적용 기록이 없어요 (아직 2_Apply 를 안 했거나 되돌렸음). 적용하면 바뀔 내용만 보여 줘요.' }
     } else {
         # 미리보기: 무엇을 적용할지 창에서 고름 (아무 PC 나 여기서 맞춤)
-        # 창이 차례로 열림: 설정 → 백그라운드 예외(설정을 고른 경우) → 검색 색인 → 지울 앱(앱 삭제를 고른 경우).
+        # 창이 차례로 열림: 설정 → 백그라운드 예외(설정을 고른 경우) → 검색 색인 → Defender(체크한 경우) → 지울 앱(앱 삭제를 고른 경우) → 시작 프로그램.
         # 어느 창에서든 취소하면 미리보기 전체를 멈추고, 고른 값은 마지막 창까지 확인했을 때만 한꺼번에 저장 (중간에 취소하면 전에 고른 값 그대로)
         Head '무엇을 적용할지 고르기'
         $cur = Read-Options; if ($null -eq $cur) { $cur = New-DefaultFlags }
@@ -1514,7 +1779,7 @@ function Invoke-Report {
         $picked = Show-SettingsPicker $cur
         if ($null -eq $picked) { Stop-PreviewCancel '무엇을 적용할까요'; return }
         $flags = $picked
-        Say ("  적용할 항목: " + (@($flags.Keys | Where-Object { $flags[$_] -and $OptLabels.Contains($_) } | ForEach-Object { $OptLabels[$_].Split(' (')[0] }) -join ', '))
+        Say ("  적용할 항목: " + (@($flags.Keys | Where-Object { $flags[$_] -and $OptLabels.Contains($_) } | ForEach-Object { ($OptLabels[$_] -split ' \(')[0] }) -join ', '))   # .Split(' (') 는 5.1 에서 글자 하나씩 나눠 '앱'만 남음
         # 백그라운드 예외는 설정을 적용할 때만 고름
         $bgp = $null
         if ($flags.Settings) {
@@ -1538,6 +1803,7 @@ function Invoke-Report {
         }
         # 검색 색인은 따로 크게 물어봄 (다른 항목 사이에 있으면 놓치기 쉬워서)
         if (-not (Select-SearchOption $flags)) { Stop-PreviewCancel '검색 색인'; return }
+        if (-not (Select-DefenderOption $flags)) { Stop-PreviewCancel 'Defender 예약 검사'; return }
         # 지울 앱 (전에 고른 것 + 지웠는데 다시 생긴 것을 미리 체크해 둠)
         $appPick = $null
         if ($flags.Apps) {
@@ -1553,10 +1819,23 @@ function Invoke-Report {
                 if ($null -eq $appPick) { Stop-PreviewCancel '지울 앱 고르기'; return }
             }
         }
+        # 시작 프로그램 (처음 체크 = 지금 상태, 전에 골라 둔 것이 있으면 그 값)
+        $suPlan = $null
+        if ($flags.Startup) {
+            $su = @(Get-StartupItems)
+            if ($su.Count) {
+                Head '시작 프로그램 고르기'
+                Say "  고르는 창이 열려요. 로그인할 때 켜 둘 것만 체크하세요. (지금 켜짐 $(@($su | Where-Object On).Count)개, 꺼짐 $(@($su | Where-Object { -not $_.On }).Count)개)"
+                $pick = Show-StartupPicker $su (Get-StartupWant $su (Read-StartupSelection))
+                if ($null -eq $pick) { Stop-PreviewCancel '시작 프로그램 고르기'; return }
+                $suPlan = @(Get-StartupChanges $su $pick)
+            } else { $suPlan = @() }
+        }
         # 모든 창에서 확인을 눌렀을 때만 한꺼번에 저장
         Save-Options $flags
         if ($null -ne $bgp) { Save-BgSelection $bgp; Set-BgExtra $bgp }
         if ($null -ne $appPick) { Save-Selection @($appPick) }
+        if ($null -ne $suPlan) { Save-StartupSelection $suPlan; Set-StartupPlan $suPlan }
         Say '  고른 것을 모두 저장했어요. 적용(메뉴 2)할 때 이대로 써요.'
     }
 
@@ -1604,7 +1883,7 @@ function Invoke-Report {
     }
 
     # ---- 레지스트리 ----
-    $items = @(Get-ActiveRegItems $flags | Where-Object Kind -ne 'Track')
+    $items = @(Get-ActiveRegItems $flags | Where-Object { $_.Kind -ne 'Track' -and $_.Cat -ne 'Startup' })   # 시작 프로그램은 아래에서 따로
     if ($items.Count) {
         Head $(if ($strict) { '레지스트리 (맞게 돼 있는지)' } else { '레지스트리 (지금 → 바뀔 값)' })
         $diffN = 0; $sameN = 0
@@ -1690,6 +1969,42 @@ function Invoke-Report {
                   "그래서 스토어에서 설치한 앱이 모두 백그라운드에서 막혀 있어요" +
                   $(if ($recOff.Count) { " - 특히 $(($recOff | ForEach-Object Label) -join ', ')" } else { '' }) +
                   ". 메뉴 5(일부 옵션만 복구) → 1. 백그라운드 앱 다시 켜기에서 골라 켜면 바로 고쳐져요.")
+        }
+    }
+
+    # ---- 시작 프로그램 ----
+    if ($flags.Startup) {
+        Head '시작 프로그램'
+        if ($strict) {
+            # 점검: BeSffy 로 바꾼 것이 지금도 그대로인지 (작업 관리자에서 다시 바꾸는 건 사용자 마음이라 주의가 아니라 안내만)
+            $hp = @($history.Startup)
+            if (-not $hp.Count) { Say '  BeSffy 로 바꾼 시작 프로그램이 없어요.' }
+            else {
+                $moved = @($hp | Where-Object { $n = Get-StartupNow $_.Id; $null -ne $n -and $n -ne $_.Want })
+                Say "  BeSffy 로 바꾼 시작 프로그램 $($hp.Count)개 (끔 $(@($hp | Where-Object { -not $_.Want }).Count)개, 켬 $(@($hp | Where-Object Want).Count)개) 중 지금도 그대로 $($hp.Count - $moved.Count)개"
+                if ($moved.Count) { Say "  그 뒤 다시 바뀐 것 (작업 관리자에서 바꿨거나 프로그램이 직접 바꿈): $(($moved | ForEach-Object Label) -join ', '). 다시 맞추려면 메뉴 1(미리보기)에서 고른 뒤 메뉴 2(적용)" }
+            }
+        } else {
+            $plan = @($script:StartupPlan)
+            $off = @($plan | Where-Object { -not $_.Want }); $on = @($plan | Where-Object Want)
+            if (-not $plan.Count) { Say "  바꿀 것 없음 (지금 상태 그대로)$(if ($check -or $null -eq (Read-StartupSelection)) { '. 미리보기에서 고르면 그대로 적용해요' })" }
+            if ($off.Count) { Say "  로그인할 때 안 켜지게 (끔) $($off.Count)개: $(($off | ForEach-Object Label) -join ', ')" }
+            if ($on.Count)  { Say "  다시 켬 $($on.Count)개: $(($on | ForEach-Object Label) -join ', ')" }
+        }
+    }
+
+    # ---- Defender 예약 검사 ----
+    if ($flags.DefenderScan) {
+        Head 'Defender 예약 검사'
+        $dp = Get-DefenderScanPref
+        if ($null -eq $dp) { Say "  Defender 설정을 읽지 못해 건너뛰어요 (다른 백신을 쓰거나 Defender 가 꺼져 있음: $($script:DefenderErr))" }
+        elseif ($strict) {
+            if (Test-DefenderWanted $dp) { Say "  OK $(Format-DefenderPref $dp)" }
+            else { Warn "Defender 예약 검사 제한이 바뀌어 있어요 (지금 $(Format-DefenderPref $dp)). 메뉴 2(적용)를 다시 실행하세요." }
+        } else {
+            $a = Get-DefenderAdvice $dp
+            foreach ($l in @($a.Scan, $a.Now, "→ $($a.Hint)")) { if ($l) { Say "  $l" } }
+            Say '  바꿀 값: CPU 평균 20% / PC 가 쉴 때도 제한 예 / 낮은 우선순위 예 (실시간 보호는 그대로, 예약 검사가 조금 더 오래 걸려요)'
         }
     }
 
@@ -1813,6 +2128,7 @@ function Invoke-Apply {
         $flags = Show-SettingsPicker (New-DefaultFlags)
         if ($null -eq $flags) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
         if (-not (Select-SearchOption $flags)) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
+        if (-not (Select-DefenderOption $flags)) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
         $saveFlags = $true
     }
 
@@ -1837,8 +2153,25 @@ function Invoke-Apply {
             $sel = @($sel + $back)
         }
     }
+    # ---- 시작 프로그램: 아직 안 골랐으면 고르는 창 ----
+    if ($flags.Startup -and $null -eq (Read-StartupSelection)) {
+        $su = @(Get-StartupItems); $suPlan = @()
+        if ($su.Count) {
+            Say '  시작 프로그램을 아직 안 골랐어요. 고르는 창을 열어요.'
+            $pick = Show-StartupPicker $su (Get-StartupWant $su $null)
+            if ($null -eq $pick) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
+            $suPlan = @(Get-StartupChanges $su $pick)
+        }
+        Save-StartupSelection $suPlan; Set-StartupPlan $suPlan
+    }
     if ($saveFlags) { Save-Options $flags }   # 창을 모두 고른 뒤에 저장 (아래에서 이번 적용용으로 Apps 를 끌 수 있어서 그 전에)
     if (-not $sel.Count) { $flags.Apps = $false }
+    # Defender 를 못 쓰는 PC (다른 백신 등) 면 건너뜀
+    $defNow = $null
+    if ($flags.DefenderScan) {
+        $defNow = Get-DefenderScanPref
+        if ($null -eq $defNow) { Say "  Defender 설정을 읽지 못해 'Defender 예약 검사 가볍게'는 건너뛰어요 ($($script:DefenderErr))"; $flags.DefenderScan = $false }
+    }
 
     # ---- OneDrive ----
     # 'PC 폴더 백업'으로 옮겨진 폴더가 있으면 통째로 건너뜀 (동기화 막기 정책도 안 씀:
@@ -1864,10 +2197,13 @@ function Invoke-Apply {
     Say ("  시스템 구성요소 삭제: {0} / 설정·정책: {1} / 업데이트 잠금: {2} / OneDrive 제거: {3} / 다크 모드: {4}" -f
         (YesNo $flags.SystemComponents), (YesNo $flags.Settings), (YesNo $flags.UpdateLock), (YesNo $flags.OneDrive), (YesNo $flags.DarkMode))
     if ($wsOn) { Say "  검색 색인: $searchTxt" }
+    $suAct = @(Get-ActiveRegItems $flags | Where-Object Cat -eq 'Startup')
+    if ($flags.Startup) { Say "  시작 프로그램: $(if ($suAct.Count) { "끔 $(@($script:StartupPlan | Where-Object { -not $_.Want }).Count)개 / 켬 $(@($script:StartupPlan | Where-Object Want).Count)개" } else { '바꿀 것 없음' })" }
+    Say "  [베타기능] Defender 예약 검사 가볍게: $(YesNo $flags.DefenderScan)"
     foreach ($r in Get-SkippedRegItems $flags) { Say "  건너뜀: $($r.Desc) - $($r.Skip)" }
     if (-not (Ask "`n위 내용으로 적용할까요?")) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
 
-    $S = @{ Bk = (Join-Path $script:BackupRoot $script:Stamp); Flags = $flags; Sel = $sel; Od = $od; OdSkipped = $odSkipped; DefOk = $false }
+    $S = @{ Bk = (Join-Path $script:BackupRoot $script:Stamp); Flags = $flags; Sel = $sel; Od = $od; OdSkipped = $odSkipped; DefOk = $false; Defender = $defNow }
     New-Item -ItemType Directory -Force -Path $S.Bk | Out-Null
 
     Head '1. 복원 지점'
@@ -1902,6 +2238,7 @@ function Invoke-Apply {
         if ($searchOn -or ($h -and $h.Flags.DisableSearch)) { Set-SearchKept -WasOff:$searchOn }
     }
     if ($flags.Settings)   { Invoke-Step '5. 터미널 · 바로가기 · 예약된 저장소' { Set-ShellSettings $S } }
+    if ($flags.DefenderScan) { Invoke-Step '5-2. Defender 예약 검사' { Set-DefenderScan } }
     if ($flags.UpdateLock) { Invoke-Step '6. 업데이트 잠금' { Set-UpdateLock } }
     if ($flags.OneDrive)   { Invoke-Step '7. OneDrive' { Remove-OneDrive $S.Od } }
     if ($flags.Apps)       { Invoke-Step '8. 앱 삭제' { Remove-Apps $S } }
@@ -1910,7 +2247,7 @@ function Invoke-Apply {
     Head '끝'
     Say '  되돌리기: 메뉴 4(되돌리기) (레지스트리·서비스·업데이트 잠금·터미널·바로가기·예약된 저장소). 지운 앱은 스토어, 구성요소는 설정 → 선택적 기능, 전체는 복원 지점으로'
     Say '  점검: 다시 시작한 뒤 메뉴 3(점검)'
-    Say '  백그라운드가 막혀서 안 되는 앱(클라우드 동기화·파일 공유·메신저 등)이 있거나 검색 색인을 다시 켜려면: 메뉴 5(일부 옵션만 복구)'
+    Say '  백그라운드가 막혀서 안 되는 앱(클라우드 동기화·파일 공유·메신저 등)이 있거나, 검색 색인·꺼 둔 시작 프로그램을 다시 켜려면: 메뉴 5(일부 옵션만 복구)'
     Say '  다시 시작해야 서비스 묶기·빠른 시작·구성요소 제거·탐색기 설정이 모두 적용돼요.'
     $file = Write-Report 'apply' '적용 결과' @("백업: $($S.Bk)")
     Show-WarnSummary
@@ -1955,7 +2292,7 @@ function Backup-BeforeApply($S, $items) {
     }
     $rs = ''; if ($S.Flags.Settings) { try { $rs = "$((Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState)" } catch {} }
     $state = [ordered]@{
-        Version         = 8
+        Version         = 9
         Stamp           = $script:Stamp
         User            = Get-CurrentUserName
         Applied         = $S.Flags
@@ -1969,6 +2306,8 @@ function Backup-BeforeApply($S, $items) {
         ReservedStorage = $rs
         NewKeys         = @($newKeys)
         NewKeysDefault  = @($newDef)
+        Startup         = @(if ($S.Flags.Startup) { $script:StartupPlan | Where-Object { $t = Get-StartupTarget $_.Id; $t -and $t.Exists } })
+        Defender        = $S.Defender
     }
     Write-TextFile (Join-Path $bk 'state.json') ($state | ConvertTo-Json -Depth 6)
     Say "  백업 폴더: $bk"
@@ -2327,6 +2666,12 @@ function Undo-OneBackup([string]$bk) {
         }
     }
 
+    # 2-2. Defender 예약 검사: 적용 전 값으로
+    if ($st.PSObject.Properties['Defender'] -and $st.Defender) {
+        try { Set-DefenderScanPref $st.Defender; Say "  Defender 예약 검사 되돌림 ($(Format-DefenderPref $st.Defender))" }
+        catch { Warn "Defender 예약 검사 설정을 되돌리지 못했어요: $("$($_.Exception.Message)".Trim())" }
+    }
+
     # 3. 업데이트 잠금: 적용 전에 없던 것만 지움 (예전 LiteTools 이름으로 만든 것도 같이 정리)
     if ($st.HadTask -eq $false) {
         Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -2561,6 +2906,39 @@ function Enable-SearchIndex {
     }
     return $true
 }
+# ---- 메뉴 5 의 3: 시작 프로그램 다시 켜기 ----
+# 지금 꺼져 있는 시작 프로그램(BeSffy 로 껐든 작업 관리자로 껐든) 중 골라서 켬. 다음 적용 때 다시 끄지 않게 고른 값에서도 뺌
+function Invoke-StartupOn {
+    Head '시작 프로그램 다시 켜기'
+    $su = @(Get-StartupItems | Where-Object { -not $_.On })
+    if (-not $su.Count) { Say '  지금 꺼져 있는 시작 프로그램이 없어요.'; return }
+    Say "  지금 로그인할 때 안 켜지는 프로그램 $($su.Count)개: $(($su | ForEach-Object Label) -join ', ')"
+    $want = @{}; foreach ($it in $su) { $want[$it.Id] = $false }
+    Say '  고르는 창이 열려요. 다시 켤 것만 체크하세요.'
+    $pick = Show-StartupPicker $su $want -Restore
+    if ($null -eq $pick) { Say '  취소했어요. 아무것도 바꾸지 않았어요.'; return }
+    $plan = @(Get-StartupChanges $su $pick)
+    if (-not $plan.Count) { Say '  고른 게 없어요. 아무것도 바꾸지 않았어요.'; return }
+    Say "  다시 켤 것 $($plan.Count)개: $(($plan | ForEach-Object Label) -join ', ')"
+    if (-not (Ask '  이대로 다시 켤까요?')) { Say '  취소했어요. 아무것도 바꾸지 않았어요.'; return }
+    $items = @(foreach ($c in $plan) {
+        $t = Get-StartupTarget $c.Id
+        [pscustomobject]@{ Cat = 'Startup'; Hive = $t.Hive; Key = $t.Key; Name = $t.Name; Kind = $t.Kind; Value = $t.On; Desc = "시작 프로그램 켬: $($c.Label)"; CurOnly = $true; Skip = $null }
+    })
+    $f = Join-Path $script:ReportDir "startup_$($script:Stamp).reg"
+    Write-RegFile $f (Build-ApplyLines $items)
+    $null = Import-Reg $f
+    $bad = Test-RegApplied $items
+    $sel = Read-StartupSelection
+    if ($null -ne $sel) { Save-StartupSelection @($sel | Where-Object { @($plan | ForEach-Object Id) -notcontains $_.Id }) }
+    Head '끝'
+    Say "  다시 켰어요: $($plan.Count - $bad)개. 다음에 로그인할 때부터 자동으로 켜져요."
+    Say '  다음 적용(메뉴 2) 때도 다시 끄지 않아요. 다시 끄려면 미리보기의 시작 프로그램 창에서 체크를 풀고 적용하세요.'
+    $file = Write-Report 'startup' '시작 프로그램 다시 켜기 결과' @("다시 켬: $(($plan | ForEach-Object Label) -join ', ')")
+    Show-WarnSummary
+    Write-Host "`n결과 보고서: $file" -ForegroundColor Green
+}
+
 # 메뉴 5: 일부 옵션만 복구 - 무엇을 다시 켤지 고름
 function Invoke-Restore {
     Head '일부 옵션만 복구 (다시 켜기)'
@@ -2570,10 +2948,12 @@ function Invoke-Restore {
     $wsTxt = if ($null -eq $ws) { '이 PC 에 없음' } elseif ($ws -eq 'disabled') { '꺼져 있음' } else { '켜져 있음' }
     Say "  1. 백그라운드 앱 다시 켜기 - 막힌 스토어 앱(서비스)을 프로그램별로 골라서 허용 (지금: $(if ($bgBlocked) { '스토어 앱 백그라운드 금지 걸림' } else { '금지 안 걸림' }))"
     Say "  2. 검색 색인 다시 켜기     - Windows 검색 색인(WSearch)을 원래대로 켬 (지금: $wsTxt)"
+    Say "  3. 시작 프로그램 다시 켜기 - 로그인할 때 안 켜지게 해 둔 프로그램을 골라서 다시 켬"
     $c = "$(Read-Host '  번호를 고르세요 (Enter 는 메뉴로)')".Trim()
     switch ($c) {
         '1'     { Invoke-BgEdit }
         '2'     { Invoke-SearchOn }
+        '3'     { Invoke-StartupOn }
         default { Say '  아무것도 고르지 않았어요. 메뉴로 돌아가요.' }
     }
 }
@@ -2636,7 +3016,7 @@ function Show-Menu {
         Write-Host '  2. 적용             - 복원 지점·백업을 만든 뒤 고른 대로 적용'
         Write-Host '  3. 점검             - 적용한 것이 지금도 맞는지 확인 (아무것도 안 바꿈)'
         Write-Host '  4. 되돌리기         - 적용했던 것을 되돌림'
-        Write-Host '  5. 일부 옵션만 복구 - 막힌 백그라운드 앱(클라우드·파일 공유·메신저 등)과 검색 색인만 골라서 다시 켬'
+        Write-Host '  5. 일부 옵션만 복구 - 막힌 백그라운드 앱, 검색 색인, 꺼 둔 시작 프로그램만 골라서 다시 켬'
         Write-Host '  q. 종료'
         Write-Host ''
         $c = (Read-Host '  번호를 고르세요 (종료는 q)').Trim()
