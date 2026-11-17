@@ -1778,6 +1778,14 @@ function Get-Backups {
         Sort-Object Name)
 }
 function Read-State([string]$bk) { (Read-TextFile (Join-Path $bk 'state.json')) | ConvertFrom-Json }
+# 이 PC 의 고유 번호 (Windows 를 새로 설치하면 바뀜). 백업이 이 PC 에서 만든 것인지 확인용
+function Get-MachineId { "$((Get-RegValue $HKLM 'SOFTWARE\Microsoft\Cryptography' 'MachineGuid').Value)" }
+# 이 PC 에서 적용을 끝까지 마친 백업인지. 이 확인이 생기기 전 백업(Machine 기록 없음)은 그대로 인정 (예전부터 되돌릴 수 있었으므로)
+function Test-BackupDone($b) {
+    try { $st = Read-State $b.FullName } catch { return $false }
+    if (-not $st.PSObject.Properties['Machine']) { return $true }
+    ("$($st.Machine)" -eq (Get-MachineId)) -and (Test-Path -LiteralPath (Join-Path $b.FullName 'apply_done.txt'))
+}
 # 지금까지 적용한 것 (되돌리지 않은 백업 전부). 없으면 $null
 function Get-AppliedInfo {
     $bks = @(Get-Backups)
@@ -2405,6 +2413,8 @@ function Invoke-Apply {
     $file = Write-Report 'apply' '적용 결과' @("백업: $($S.Bk)")
     Show-WarnSummary
     Write-Host "`n결과 보고서: $file" -ForegroundColor Green
+    # 적용을 끝까지 마쳤다는 표시 (되돌리기는 이 표시가 있는 PC 에서만)
+    Write-TextFile (Join-Path $S.Bk 'apply_done.txt') "# 적용 끝 ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))`r`n"
     $script:ApplyDone = $true
 }
 
@@ -2449,6 +2459,7 @@ function Backup-BeforeApply($S, $items) {
         AppVersion      = $Version   # 적용한 BeSffy 버전 (나중에 예전 버전 정리 등에서 씀)
         Stamp           = $script:Stamp
         User            = Get-CurrentUserName
+        Machine         = Get-MachineId   # 다른 PC 에서 가져온 backup 폴더로는 되돌리지 않게
         Applied         = $S.Flags
         BgApps          = @($script:BgExtra)
         OneDriveSkipped = $S.OdSkipped
@@ -2779,6 +2790,13 @@ function Invoke-Undo {
     $all = @(Get-Backups | Sort-Object Name -Descending)
     Head '되돌리기'
     if (-not $all.Count) { Say '  되돌릴 백업이 없어요.'; return }
+    # BeSffy 를 적용하지 않은 PC 에서 되돌리기만 눌러 의도치 않게 바뀌는 것을 막음
+    if (-not @($all | Where-Object { Test-BackupDone $_ }).Count) {
+        Say '  이 PC 에서 적용(메뉴 2)을 끝까지 마친 기록이 없어서 되돌리지 않았어요. 아무것도 바꾸지 않았어요.'
+        Say '  (backup 폴더가 다른 PC 에서 가져온 것이거나, 적용이 중간에 멈춘 경우예요)'
+        Say "  적용이 중간에 멈췄다면 그때 만든 복원 지점('BeSffy 적용 전')으로 시스템 복원을 하세요."
+        return
+    }
     Say "  되돌릴 백업 $($all.Count)개 (최근 것부터 차례로, 끝나면 맨 처음 적용 전 상태): $(($all | ForEach-Object Name) -join ', ')"
     Say '  지운 앱·구성요소·OneDrive 는 되돌리지 않아요 (스토어·설정 → 선택적 기능·복원 지점으로).'
     if (-not (Ask '되돌릴까요?')) { Say '  취소했어요. 아무것도 바꾸지 않았어요.'; return }
@@ -3360,6 +3378,7 @@ function Show-Menu {
         Write-Host "  BeSffy v$Version  -  Best SFF Optimizer" -ForegroundColor Cyan
         Write-Host '  이 PC 에 적용 / 점검 / 되돌리기' -ForegroundColor Cyan
         Write-Host "  $Credit  ·  MIT License" -ForegroundColor DarkGray
+        Write-Host "  공식 배포: https://github.com/$UpdateRepo" -ForegroundColor DarkGray
         Write-Host '============================================================' -ForegroundColor Cyan
         Write-Host '  1. 미리보기         - 무엇을 적용할지 고르고, 바뀔 내용만 봄 (아무것도 안 바꿈)'
         Write-Host '  2. 적용             - 복원 지점·백업을 만든 뒤 고른 대로 적용'
@@ -3411,6 +3430,19 @@ function Get-UrlBytes([string]$url) {
     $wc.Headers['User-Agent'] = 'BeSffy'
     try { return , $wc.DownloadData($url) } finally { $wc.Dispose() }   # , : 바이트 배열을 그대로 돌려줌 (안 붙이면 한 바이트씩 풀려 나감)
 }
+function Get-Sha256Hex([byte[]]$b) { $h = [Security.Cryptography.SHA256]::Create(); try { -join ($h.ComputeHash($b) | ForEach-Object { $_.ToString('x2') }) } finally { $h.Dispose() } }
+# GitHub 이 Release 파일마다 알려 주는 SHA-256 (Release 페이지의 파일 옆에도 같은 값이 보임). 없으면 ''
+function Get-AssetSha256($asset) { "$($asset.digest)" -replace '^sha256:', '' }
+# 지금 쓰는 파일이 GitHub Release 의 같은 버전 파일과 똑같은지 보여 줌 (직접 받은 사람도 안심하고 쓰게)
+function Show-SelfHash([string]$self, $rel) {
+    $h = Get-Sha256Hex ([IO.File]::ReadAllBytes($self))
+    Write-Host "  이 파일 SHA-256: $h" -ForegroundColor DarkGray
+    $a = @($rel.assets) | Where-Object { $_.name -eq 'BeSffy.cmd' } | Select-Object -First 1
+    $gh = if ($a) { Get-AssetSha256 $a } else { '' }
+    if (-not $gh) { return }
+    if ($gh -eq $h) { Write-Host "  GitHub 의 v$Version 공식 파일과 똑같아요 (SHA-256 일치)." -ForegroundColor Green }
+    else { Write-Host "  GitHub 의 v$Version 공식 파일과 SHA-256 이 달라요. 다른 곳에서 받았거나 바뀐 파일일 수 있으니 공식 파일을 받아 쓰세요: $($rel.html_url)" -ForegroundColor Yellow }
+}
 # 'v1.3' → [version] 1.3. 버전 모양이 아니면 $null
 function ConvertTo-AppVersion([string]$s) { $v = $null; if ([version]::TryParse(($s.Trim() -replace '^[vV]', ''), [ref]$v)) { $v } }
 # 서명 파일(Base64 한 줄)이 이 파일 내용의 SHA-256 서명(RSA)인지 공개 열쇠로 확인
@@ -3427,12 +3459,17 @@ function Invoke-UpdateCheck {
     $self = "$env:BESFFY_SELF"
     if ($self -notmatch '\.cmd$' -or -not (Test-Path -LiteralPath $self)) { return $false }   # .cmd 로 실행한 게 아니면(원본 .ps1 시험 등) 건너뜀
     $cur = [version]$Version
-    Write-Host "`n  새 버전이 있는지 확인하는 중 (GitHub)..." -ForegroundColor DarkGray
+    Write-Host "`n  새 버전이 있는지 확인하는 중 (https://github.com/$UpdateRepo)..." -ForegroundColor DarkGray
     try { $rel = Get-LatestRelease }
     catch { Write-Host "  새 버전을 확인하지 못했어요 (인터넷 연결 확인). 지금 버전(v$Version)으로 계속해요." -ForegroundColor DarkGray; return $false }
     $new = ConvertTo-AppVersion "$($rel.tag_name)"
-    if (-not $new -or $new -le $cur) { Write-Host "  최신 버전이에요 (v$Version)." -ForegroundColor DarkGray; return $false }
+    if (-not $new -or $new -le $cur) {
+        Write-Host "  최신 버전이에요 (v$Version)." -ForegroundColor DarkGray
+        if ($new -eq $cur) { try { Show-SelfHash $self $rel } catch {} }
+        return $false
+    }
     Write-Host "`n  새 버전이 있어요: v$new (지금 v$Version)" -ForegroundColor Cyan
+    Write-Host "  Release 페이지: $($rel.html_url)" -ForegroundColor DarkGray
     foreach ($l in @("$($rel.body)" -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 10)) { Write-Host "    $l" }
     if (-not (Ask '  받아서 새 버전으로 실행할까요? (아니요면 지금 버전으로 계속해요)')) { return $false }
     $page = "$($rel.html_url)"
@@ -3441,10 +3478,19 @@ function Invoke-UpdateCheck {
     if (-not $a -or -not $g) { Write-Host "  이 Release 에 BeSffy.cmd 나 서명 파일(BeSffy.cmd.sig)이 없어서 받지 않았어요. 직접 받아 주세요: $page" -ForegroundColor Yellow; return $false }
     try { $data = Get-UrlBytes "$($a.browser_download_url)"; $sig = Get-UrlBytes "$($g.browser_download_url)" }
     catch { Write-Host "  받지 못했어요 ($("$($_.Exception.Message)".Trim())). 지금 버전으로 계속해요." -ForegroundColor Yellow; return $false }
+    $dh = Get-Sha256Hex $data; $gh = Get-AssetSha256 $a
+    Write-Host "  받은 곳: $($a.browser_download_url)"
+    Write-Host "  받은 파일 SHA-256: $dh"
+    if ($gh -and $gh -ne $dh) {
+        Write-Host "  받은 파일의 SHA-256 이 GitHub 이 알려 준 값($gh)과 달라서 쓰지 않았어요 (받는 중에 깨졌거나 바뀌었을 수 있어요). 지금 버전으로 계속해요." -ForegroundColor Red
+        return $false
+    }
+    Write-Host "  $(if ($gh) { '[확인] SHA-256 이 GitHub Release 페이지의 값과 같아요' } else { '[건너뜀] GitHub 이 이 파일의 SHA-256 을 알려 주지 않아 비교는 못 했어요 (아래 서명으로 확인)' })" -ForegroundColor $(if ($gh) { 'Green' } else { 'DarkGray' })
     if (-not (Test-UpdateSignature $data $sig)) {
         Write-Host "  받은 파일의 서명이 맞지 않아서 쓰지 않았어요 (파일이 바뀌었거나 깨졌을 수 있어요). 지금 버전으로 계속해요. 직접 받으려면: $page" -ForegroundColor Red
         return $false
     }
+    Write-Host "  [확인] 만든 사람(Jigap-Appem)의 서명이 맞아요" -ForegroundColor Green
     # 받은 파일 안의 버전이 지금보다 새로워야 바꿈 (예전 버전으로 되돌려 놓는 것과, 같은 버전을 계속 받는 것을 막음)
     $fileVer = if ([Text.Encoding]::UTF8.GetString($data) -match "(?m)^\`$Version\s*=\s*'([0-9.]+)'") { ConvertTo-AppVersion $Matches[1] }
     if (-not $fileVer -or $fileVer -le $cur) { Write-Host "  받은 파일의 버전($(if ($fileVer) { "v$fileVer" } else { '알 수 없음' }))이 지금보다 새롭지 않아서 바꾸지 않았어요." -ForegroundColor Yellow; return $false }
