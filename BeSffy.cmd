@@ -31,6 +31,17 @@ if not defined BESFFY_ADMIN if /i "%~1"=="/besffy-elevated" (
   pause
   exit /b 1
 )
+rem On a mapped network drive (Z: and so on) the administrator window cannot see the drive and closes at once,
+rem so say so and stop before asking for permission.
+if not defined BESFFY_ADMIN (
+  "%BESFFY_POSH%" -NoProfile -Command "try{if((New-Object IO.DriveInfo('%~d0')).DriveType -eq 'Network'){exit 3}}catch{}"
+  if errorlevel 3 if not errorlevel 4 (
+    set "BESFFY_KEY=MSG-NET"
+    "%BESFFY_POSH%" -NoProfile -Command "%BESFFY_SAY%"
+    pause
+    exit /b 1
+  )
+)
 if not defined BESFFY_ADMIN (
   "%BESFFY_POSH%" -NoProfile -Command "$a='/c '+[char]34+[char]34+$env:BESFFY_SELF+[char]34+' /besffy-elevated'+[char]34; try{Start-Process -Verb RunAs -FilePath ($env:SystemRoot+'\System32\cmd.exe') -ArgumentList $a -ErrorAction Stop}catch{exit 1}" >nul 2>&1
   if errorlevel 1 (
@@ -57,10 +68,22 @@ if not exist "%BESFFY_PS%" (
   pause
   exit /b 1
 )
-"%BESFFY_POSH%" -NoProfile -ExecutionPolicy Bypass -File "%BESFFY_PS%"
+rem Run the program. The lines from "(" to ")" are read as one block before they run:
+rem the program may replace this file with a newer version (automatic update), and cmd.exe
+rem must not read the replaced file from the middle afterwards.
+rem Exit code 77 means "updated": run the new file from the top in this same window (already administrator).
 rem If the program stopped with an error, keep the window open so the message can be read.
-if errorlevel 1 pause
-del "%BESFFY_PS%" >nul 2>&1
+(
+  "%BESFFY_POSH%" -NoProfile -ExecutionPolicy Bypass -File "%BESFFY_PS%"
+  if errorlevel 77 if not errorlevel 78 (
+    del "%BESFFY_PS%" >nul 2>&1
+    call "%BESFFY_SELF%"
+    exit /b
+  )
+  if errorlevel 1 pause
+  del "%BESFFY_PS%" >nul 2>&1
+  exit /b
+)
 exit /b
 rem ------------------------------------------------------------
 rem  [안내] 여기부터는 명령 프롬프트가 읽지 않아요. 메모장으로 보는 분을 위한 설명이에요.
@@ -69,10 +92,13 @@ rem  - 이 파일 하나만 있으면 돼요. 더블클릭하면 관리자 권�
 rem  - 위쪽 몇 줄이 하는 일:
 rem    1) 32비트 프로그램에서 열려도 항상 64비트 Windows 도구(PowerShell 등)를 써요.
 rem    2) 관리자 권한인지 확인하고, 아니면 관리자 권한으로 다시 열어요 (한 번만 물어봐요).
+rem       네트워크 드라이브(Z: 등)에 있으면 관리자 창에서 그 드라이브가 안 보여서, 묻기 전에 PC 안으로 복사하라고 안내해요.
 rem       다시 열 때는 이 파일을 직접 열지 않고 cmd.exe 로 실행해요
 rem       (인터넷에서 받은 파일을 직접 열면 스마트 앱 컨트롤·SmartScreen 이 또 막을 수 있어서).
 rem    3) 아래 표시 줄 다음의 프로그램(PowerShell) 내용을 임시 폴더에 꺼내 실행하고, 끝나면 지워요.
 rem       프로그램이 오류로 멈추면 창을 바로 닫지 않고 기다려서 오류 내용을 읽을 수 있게 해요.
+rem    4) 프로그램이 새 버전으로 바꿨다고 알리면(종료 코드 77), 같은 창에서 새 파일을 처음부터 다시 실행해요.
+rem       새 버전은 GitHub Release 에서 받고, 만든 사람의 서명이 맞을 때만 바꿔요 (프로그램 쪽에서 확인).
 rem  - 한 번 열리면 이 파일에 붙은 "인터넷에서 받은 파일" 표시를 지워서, 다음부터는 더블클릭으로 바로 열려요.
 rem  - 더블클릭이 막히면: 파일 우클릭, 속성, 아래쪽 차단 해제 체크, 확인.
 rem  - 보고서·백업·선택값은 이 파일이 있는 폴더에 생겨요.
@@ -80,6 +106,7 @@ rem
 rem  [화면 안내문] 위쪽에서 문제가 생기면 아래 줄의 글을 화면에 띄워요 (BESFFY_SAY).
 rem MSG-UAC 관리자 권한이 필요해요. 다시 더블클릭한 뒤, 권한을 묻는 창에서 '예'를 눌러 주세요.
 rem MSG-NOADMIN 관리자 권한으로 열지 못했어요. 파일을 마우스 오른쪽 버튼으로 눌러 '관리자 권한으로 실행'을 골라 주세요.
+rem MSG-NET 이 파일이 네트워크 드라이브에 있어요. 관리자 권한 창에서는 네트워크 드라이브가 보이지 않아서 실행할 수 없어요. 바탕 화면 같은 PC 안의 폴더로 복사한 뒤 다시 실행해 주세요.
 rem MSG-PREP 프로그램을 준비하지 못했어요. 파일이 깨졌을 수 있으니 다시 받아 보고, 백신 프로그램이 임시 폴더(TEMP)를 막았는지도 확인해 주세요.
 rem ------------------------------------------------------------
 rem  [라이선스] BeSffy 는 MIT 라이선스로 배포해요. 아래 저작권 표시와 허가 문구를 지우지 말고 함께 배포해 주세요.
@@ -119,25 +146,26 @@ rem ------------------------------------------------------------
                       (여러 번 적용했으면 최근 것부터 차례로 되돌려 맨 처음 적용 전 상태로)
                       (지운 앱·구성요소·OneDrive 는 되돌리지 않음: 스토어·선택적 기능·복원 지점으로)
       메뉴 3 점검     : 적용한 뒤 지금 상태가 맞는지 점검만 (아무것도 바꾸지 않음, 앱 고르는 창 없음)
-      메뉴 5 일부 옵션만 복구 : 백그라운드가 막힌 스토어 앱을 골라서 다시 허용 (프로그램별로 묶어 보여 줌), 검색 색인 다시 켜기, 시작 프로그램 다시 켜기
+      메뉴 5 일부 옵션만 복구 : 백그라운드가 막힌 스토어 앱을 골라서 다시 허용 (프로그램별로 묶어 보여 줌), 검색 색인 다시 켜기, 시작 프로그램 다시 켜기, 잠금 화면 다시 켜기
   - 설치 때만 의미 있는 것(로컬 계정·첫 세팅 화면, TPM 우회, 새 사용자 시작 메뉴·테마, 이미지 압축)은 뺐습니다.
   - 실행 중인 PC 에 그대로 쓰면 곤란한 빌드 항목은 바꿔서 적용합니다:
       · 시작 메뉴 고정 앱 비우기(ConfigureStartPins) → 뺌 (지금 고정해 둔 앱이 사라지므로)
       · 사용자 Run 키 통째 삭제 → OneDrive 항목만 지움 (다른 시작 프로그램은 그대로)
 #>
 param(
-    [ValidateSet('Menu', 'Preview', 'Apply', 'Undo', 'Check', 'Background', 'Search', 'Restore')]
+    [ValidateSet('Menu', 'Preview', 'Apply', 'Undo', 'Check', 'Background', 'Search', 'Restore', 'Fix')]
     [string]$Mode = 'Menu'
 )
 
 # ============================== 이 PC 에 적용할 것 (사용자 선택) ==============================
 $Do = [ordered]@{
     Apps             = $true    # 앱 삭제 (미리보기에서 하나씩 고른 것만)
-    SystemComponents = $true    # IE 구성요소, 옛 Windows Media Player, PowerShell ISE, 단계 레코더, 수학 입력판, Recall
+    SystemComponents = $true    # 옛 Windows Media Player, PowerShell ISE, 단계 레코더, 수학 입력판, Recall
     Settings         = $true    # 광고·추천·AI·원격 분석 끄기, Edge·앱 백그라운드 끄기, 탐색기 설정 등
+    LockScreenOff    = $true    # 잠금 화면 끄기 (Lite26H2 와 같음). 체크를 풀고 적용하면 꺼져 있던 잠금 화면을 다시 켬
     Startup          = $true    # 시작 프로그램 정리 (미리보기에서 고른 것만 켜고 끔. 작업 관리자 '시작 앱'과 같은 방식)
     DefenderScan     = $false   # Defender 예약 검사가 CPU 를 평균 20% 까지만 쓰게 (실시간 보호는 그대로). 효과가 PC 마다 달라 기본은 끔 (고르는 창의 검사 기록을 보고 켬)
-    UpdateLock       = $true    # 2046년까지 일시정지 + 매일 다시 잠금, 바탕화면 켜기/끄기, 현재 버전 고정
+    UpdateLock       = $true    # 2046년까지 일시정지 + 4시간마다 다시 잠금(Defender 정의도 받음), 바탕화면 켜기/끄기, 현재 버전 고정
     OneDrive         = $true    # OneDrive 제거 (PC·클라우드의 파일은 지우지 않음)
     DisableSearch    = $true    # 검색 색인(WSearch) 끄기
     DarkMode         = $false   # 다크 모드 (이 PC 는 밝은 모드 그대로 쓰기로 함)
@@ -156,7 +184,6 @@ $BgRecommend = [ordered]@{
                                'B9ECED6F.*', '*ArmouryCrate*', '*MyASUS*', '*ASUS*', '*MSICenter*', '*GigabyteControlCenter*',
                                '*Alienware*', '*GamingHub*', '*ControlCenter*')
 }
-$BackgroundAllow = @($BgRecommend.Values | ForEach-Object { $_ })
 # 고르는 창에서 묶어 보여 줄 프로그램 (패키지 이름 패턴 → 프로그램 이름). 위에서부터 먼저 맞는 것
 $BgVendors = @(
     @('AppleInc.*', 'Apple (iCloud 등)'), @('SAMSUNGELECTRONICS*', '삼성 (Samsung)'),
@@ -199,14 +226,18 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference    = 'SilentlyContinue'
 $AppName      = 'BeSffy'                # 프로그램 이름 (Best SFF Optimizer)
 $Credit       = 'Made by Jigap-Appem'
+# 이 프로그램의 버전. GitHub Release 태그(v1.3)와 같게 맞춤 (자동 업데이트가 이 번호로 새 버전인지 비교함)
+$Version      = '1.4'
 # 단일 .cmd 로 배포할 때는 엔진이 임시 폴더에서 돌아서, 보고서·백업·선택값을 둘 폴더를 BESFFY_HOME 으로 받음
 $Here         = if ($env:BESFFY_HOME) { $env:BESFFY_HOME } else { $PSScriptRoot }
 $DefHive      = 'BeSffyDefaultUser'     # 새 사용자 기본값(NTUSER.DAT)을 잠깐 불러올 이름 (HKEY_USERS 아래)
 $TaskPath     = '\BeSffy\'
 $TaskName     = 'WU-RePause'
 $FlagKey      = 'SOFTWARE\BeSffy'       # 업데이트 켜기/끄기 상태를 적는 레지스트리 키 (HKLM)
+$LockKey      = 'SOFTWARE\Policies\Microsoft\Windows\Personalization'   # 잠금 화면 끄기 정책(NoLockScreen)이 있는 키 (HKLM)
 # 예전(LiteTools) 이름으로 적용해 둔 PC 도 되돌리기 때 같이 정리하려고 보관
 $TaskPathOld  = '\LiteTools\'
+$FlagKeyOld   = 'SOFTWARE\LiteTools'
 $ToolsDirName = 'BeSffy'                # ProgramData 아래 도구 폴더 이름
 $PauseEnd     = '2046-01-01T00:00:00Z'
 $ToolFiles    = @('WU-Pause.ps1', 'WU-On.ps1', 'WU-Off.ps1')
@@ -227,12 +258,15 @@ function YesNo($b) { if ($b) { '예' } else { '아니요' } }
 
 # ============================== 시스템 접근 ==============================
 # Windows 에 직접 닿는 부분은 여기 함수들로만 (점검용 모의 실행에서 이 함수들만 바꿔 끼워 전체 흐름을 시험함)
-function Ask([string]$q) { $a = Read-Host "$q (Y/N)"; return ($a -match '^\s*[Yy]') }
+# 한글 입력 상태에서 Y 를 누르면 'ㅛ' 가 들어가서 그것도 예로 (전각 Ｙ, '예'·'네' 도)
+function Ask([string]$q) { $a = Read-Host "$q (Y/N)"; return ($a -match '^\s*([YyＹｙㅛ]|예|네)') }
 function New-Stamp { Get-Date -Format 'yyyyMMdd_HHmmss' }
 function Get-CurrentUserName { [Security.Principal.WindowsIdentity]::GetCurrent().Name }
 function Get-ExplorerUser {
     try {
-        $e = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" | Select-Object -First 1
+        # 지금 화면(세션)의 탐색기만: 다른 사람도 로그인해 둔 PC 에서 그 사람의 탐색기를 보지 않게
+        $sid = (Get-Process -Id $PID).SessionId
+        $e = Get-CimInstance Win32_Process -Filter "Name='explorer.exe' AND SessionId=$sid" | Select-Object -First 1
         if ($e) { $o = Invoke-CimMethod -InputObject $e -MethodName GetOwner; return "$($o.Domain)\$($o.User)" }
     } catch {}
     return $null
@@ -246,10 +280,12 @@ function Write-TextFile([string]$path, [string]$text, [string]$enc = 'utf8bom') 
 function Read-TextFile([string]$path) { [IO.File]::ReadAllText((Get-FsPath $path)) }   # BOM 으로 인코딩 자동 판단 (없으면 UTF-8)
 
 # 외부 프로그램 실행 (PowerShell 5.1 에서 오류 출력 때문에 멈추지 않도록)
+# 프로그램을 아예 실행하지 못하면(파일 없음·백신이 막음 등) Code -1 (직전 프로그램의 종료 코드가 남아 성공처럼 보이지 않게)
 function Invoke-Native([string]$exe, [string[]]$argList) {
     $ErrorActionPreference = 'Continue'
-    $o = & $exe @argList 2>&1 | ForEach-Object { "$_" }
-    [pscustomobject]@{ Code = $LASTEXITCODE; Text = (($o | Where-Object { $_ }) -join ' ').Trim() }
+    try { $o = & $exe @argList 2>&1 | ForEach-Object { "$_" }; $code = $LASTEXITCODE }
+    catch { return [pscustomobject]@{ Code = -1; Text = "실행하지 못했어요 ($exe): $(("$($_.Exception.Message)" -replace '\s+', ' ').Trim())" } }
+    [pscustomobject]@{ Code = $code; Text = (($o | Where-Object { $_ }) -join ' ').Trim() }
 }
 
 # ---- 레지스트리 (.NET 으로 직접) ----
@@ -284,6 +320,14 @@ function Get-RegValueNames([string]$root, [string]$key) {
         $base, $pre = Get-RegBase $root
         $k = $base.OpenSubKey($pre + $key, $false)
         if ($k) { $k.GetValueNames() }   # 하나씩 내보냄 (부르는 쪽에서 @() 로 받음)
+    } catch {} finally { if ($k) { $k.Close() } }
+}
+function Get-RegSubKeyNames([string]$root, [string]$key) {
+    $k = $null
+    try {
+        $base, $pre = Get-RegBase $root
+        $k = $base.OpenSubKey($pre + $key, $false)
+        if ($k) { $k.GetSubKeyNames() }   # 하나씩 내보냄 (부르는 쪽에서 @() 로 받음)
     } catch {} finally { if ($k) { $k.Close() } }
 }
 function Set-RegDirect([string]$root, [string]$key, [string]$name, [string]$kind, $value) {
@@ -327,7 +371,18 @@ function Invoke-Reg([string[]]$argList) { Invoke-Native 'reg.exe' $argList }
 # (빌드와 같은 방법. PC 설정·드라이버는 건드리지 않음)
 # 참고(유지보수): 혹시 나중에 Windows 업데이트로 UCPD 가 이름 바꾼 복사본까지 막으면,
 # 위젯 관련 키(TaskbarDa/Dsh)는 SYSTEM 권한 예약 작업 1회성 실행이나 UCPD 서비스 일시 조정으로 우회해야 할 수 있음.
-function Invoke-RegTool([string[]]$argList) { Invoke-Native (Get-RegTool) $argList }
+# 이름 바꾼 복사본(일부 보호된 키도 쓸 수 있음)을 쓰고, 그걸 못 돌리면 Windows 의 reg.exe 로 한 번 더 (대부분의 키는 이걸로도 됨)
+function Invoke-RegTool([string[]]$argList) {
+    $tool = $null; try { $tool = Get-RegTool } catch {}
+    $r = if ($tool) { Invoke-Native $tool $argList } else { [pscustomobject]@{ Code = -1; Text = 'regtool 폴더에 복사본을 만들지 못했어요' } }
+    if ($r.Code -eq -1) {
+        $sys = Join-Path $env:SystemRoot 'System32\reg.exe'
+        $r2 = Invoke-Native $sys $argList
+        if ($r2.Code -ne -1) { Say "  (레지스트리 도구 복사본을 쓰지 못해 Windows 의 reg.exe 로 대신 했어요: $($r.Text))" }
+        $r = $r2
+    }
+    $r
+}
 function Get-RegTool {
     $dir  = Join-Path $Here 'regtool'
     $tool = Join-Path $dir 'BeSffyReg.exe'
@@ -707,7 +762,9 @@ function Build-RegItems {
     Add-RegItem Settings HKLM "$pol\Windows\Windows Chat" ChatIcon DWord 3 '채팅 아이콘 숨기기'
     Add-RegItem Settings HKLM "$cv\Explorer\Advanced" TaskbarMn DWord 0 '작업 표시줄 채팅 숨기기 (시스템)'
     Add-RegItem Settings HKLM "$pol\Windows\DataCollection" AllowTelemetry DWord 0 '진단 데이터 최소 (Pro 는 필수 수준)'
-    Add-RegItem Settings HKLM "$pol\Windows\Personalization" NoLockScreen DWord 1 '잠금 화면 없이 바로 로그인 화면'
+    # 잠금 화면: 체크하면 끄고(LockScreen), 체크를 풀면 꺼져 있을 때만 다시 켬(LockScreenOn. Lite26H2 로 설치한 PC 는 처음부터 꺼져 있음)
+    Add-RegItem LockScreen HKLM $LockKey NoLockScreen DWord 1 '잠금 화면 없이 바로 로그인 화면'
+    Add-RegItem LockScreenOn HKLM $LockKey NoLockScreen DeleteValue $null '잠금 화면 다시 켜기 (끄는 정책 값 지움)'
     Add-RegItem Settings HKLM 'SOFTWARE\Microsoft\Windows\Dwm' OverlayMinFPS DWord 0 'Alt+Tab 화면 깜빡임 해결'
     Add-RegItem Settings HKLM 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device' DevicePasswordLessBuildVersion DWord 0 '비밀번호 로그인도 허용'
     Add-RegItem Settings HKLM "$pol\Edge" StartupBoostEnabled DWord 0 'Edge 시작 부스트 끄기'
@@ -825,14 +882,17 @@ function Build-RegItems {
     }
 }
 
-$CatLabels = @{ Settings = '설정·정책'; DarkMode = '다크 모드'; Search = '검색 색인'; Update = '업데이트 잠금'; OneDrive = 'OneDrive'; Startup = '시작 프로그램' }
-$CatOrder  = [Collections.Generic.List[string]]@('Settings', 'DarkMode', 'Search', 'Update', 'OneDrive', 'Startup')
+$CatLabels = @{ Settings = '설정·정책'; LockScreen = '잠금 화면'; LockScreenOn = '잠금 화면'; DarkMode = '다크 모드'; Search = '검색 색인'; Update = '업데이트 잠금'; OneDrive = 'OneDrive'; Startup = '시작 프로그램' }
+$CatOrder  = [Collections.Generic.List[string]]@('Settings', 'LockScreen', 'LockScreenOn', 'DarkMode', 'Search', 'Update', 'OneDrive', 'Startup')
 
-# 이번에 다룰 항목. $flags: 무엇을 적용(점검)하는지 (Settings/DarkMode/DisableSearch/UpdateLock/OneDrive)
+# 이번에 다룰 항목. $flags: 무엇을 적용(점검)하는지 (Settings/LockScreenOff/DarkMode/DisableSearch/UpdateLock/OneDrive)
+# LockScreenOff: $true 끔 / $false 켬 (꺼져 있을 때만 다룸) / $null 다루지 않음 (점검 때 BeSffy 가 잠금 화면을 건드린 적이 없으면)
 function Get-ActiveRegItems($flags) {
     @($script:Reg | Where-Object {
         -not $_.Skip -and (
             ($_.Cat -eq 'Settings' -and $flags.Settings) -or ($_.Cat -eq 'DarkMode' -and $flags.DarkMode) -or
+            ($_.Cat -eq 'LockScreen' -and $flags.LockScreenOff -eq $true) -or
+            ($_.Cat -eq 'LockScreenOn' -and $flags.LockScreenOff -eq $false -and (Test-LockScreenOff)) -or
             ($_.Cat -eq 'Search' -and $flags.DisableSearch) -or ($_.Cat -eq 'Update' -and $flags.UpdateLock) -or
             ($_.Cat -eq 'OneDrive' -and $flags.OneDrive) -or ($_.Cat -eq 'Startup' -and $flags.Startup))
     } | Where-Object {
@@ -1082,10 +1142,13 @@ function Get-AppStatus {
         $u = @($users | Where-Object Name -eq $a.Name)
         $p = @($prov  | Where-Object DisplayName -eq $a.Name)
         if (-not $u.Count -and -not $p.Count) { continue }
+        $pf = [bool]($p | Where-Object { Test-ProvFiles $_ })
         [pscustomobject]@{
             Name = $a.Name; Label = $a.Label; Group = $a.Group
             Installed = [bool]$u.Count; Provisioned = [bool]$p.Count
-            ProvFiles = [bool]($p | Where-Object { Test-ProvFiles $_ })
+            ProvFiles = $pf
+            # 실제로 남아 있음: 설치돼 있거나 새 사용자용 파일이 있음 (파일 없는 기록만 남은 건 지운 것으로 봄 → '다시 생김' 판단은 이것으로)
+            Present = ([bool]$u.Count -or $pf)
             Version = if ($u.Count) { "$($u[0].Version)" } else { "$($p[0].Version)" }
         }
     }
@@ -1110,8 +1173,9 @@ function Save-Selection([string[]]$names) {
 # ============================== 무엇을 적용할지 (창에서 고르기) ==============================
 $OptLabels = [ordered]@{
     Apps             = '앱 삭제 (다음 창에서 지울 앱을 하나씩 고름)'
-    SystemComponents = '시스템 구성요소 삭제 (IE·옛 미디어 플레이어·PowerShell ISE·단계 레코더·수학 입력판·Recall)'
-    Settings         = '설정·정책 (광고·추천·AI·원격 분석 끄기, 잠금 화면 없애기, 탐색기·백그라운드 등)'
+    SystemComponents = '시스템 구성요소 삭제 (옛 미디어 플레이어·PowerShell ISE·단계 레코더·수학 입력판·Recall)'
+    Settings         = '설정·정책 (광고·추천·AI·원격 분석 끄기, 탐색기·백그라운드 등)'
+    LockScreenOff    = '잠금 화면 끄기 (켤 때·잠글 때 바로 로그인 화면. 잠금 화면 사진을 쓰려면 체크를 풀어요: 꺼져 있으면 다시 켬)'
     Startup          = '시작 프로그램 정리 (다음 창에서 로그인할 때 자동으로 켜질 프로그램을 고름)'
     DefenderScan     = '[베타기능] Defender 예약 검사 가볍게 (체크하면 다음 창에서 이 PC 에 맞는지 알려 주고 할지 물어봄. 실시간 보호는 그대로)'
     UpdateLock       = '업데이트 잠금 (자동 업데이트 끄기·현재 버전 고정·바탕화면 켜기/끄기)'
@@ -1122,9 +1186,12 @@ function New-DefaultFlags { $f = [ordered]@{}; foreach ($k in $Do.Keys) { $f[$k]
 function Read-Options {
     if (-not (Test-Path -LiteralPath $script:OptFile)) { return $null }
     $f = New-DefaultFlags
+    $seen = @()
     foreach ($l in (Read-NameList $script:OptFile)) {
-        if ($l -match '^(\w+)\s*=\s*([01])$' -and $f.Contains($Matches[1])) { $f[$Matches[1]] = ($Matches[2] -eq '1') }
+        if ($l -match '^(\w+)\s*=\s*([01])$' -and $f.Contains($Matches[1])) { $f[$Matches[1]] = ($Matches[2] -eq '1'); $seen += $Matches[1] }
     }
+    # v1.3 까지는 잠금 화면 끄기가 설정·정책 안에 있었음
+    if ($seen -notcontains 'LockScreenOff') { $f['LockScreenOff'] = [bool]$f['Settings'] }
     return $f
 }
 function Save-Options($flags) {
@@ -1134,16 +1201,25 @@ function Save-Options($flags) {
 }
 # 적용할 항목 고르는 창. 확인 → 고른 flags, 취소·닫기 → $null
 function Show-SettingsPicker($current) {
-    $p = New-PickerForm '무엇을 적용할까요 - BeSffy' "적용할 항목만 체크하세요. (이 PC 에 맞게 고르면 돼요)`n취소하면 이번 작업을 멈추고 아무것도 저장하지 않아요." 640 420
+    $dv = Get-DefenderState
+    $note = if (-not $dv.Ok) { "※ $($dv.Reason). 이 PC 는 Defender 가 백신으로 돌고 있지 않아서 [베타기능] Defender 예약 검사는 고를 수 없어요. 업데이트 잠금의 Defender 정의 받기도 건너뛰어요 (쓰는 백신이 알아서 업데이트해요)." }
+    $p = New-PickerForm '무엇을 적용할까요 - BeSffy' "적용할 항목만 체크하세요. (이 PC 에 맞게 고르면 돼요)`n취소하면 이번 작업을 멈추고 아무것도 저장하지 않아요." 640 $(if ($note) { 510 } else { 450 }) -Notice $note
     $f = $p.Form; $list = $p.List
     $keys = @($OptLabels.Keys)
-    foreach ($k in $keys) { $i = $list.Items.Add($OptLabels[$k]); $list.SetItemChecked($i, [bool]$current[$k]) }
+    $lockAt = -1
+    foreach ($k in $keys) {
+        if ($k -eq 'DefenderScan' -and -not $dv.Ok) { $lockAt = $list.Items.Add("$($OptLabels[$k])   ← 고를 수 없음 (위 안내)"); continue }
+        $i = $list.Items.Add($OptLabels[$k]); $list.SetItemChecked($i, [bool]$current[$k])
+    }
+    # 고를 수 없는 항목은 눌러도 체크되지 않게 (몇 번째인지는 목록에 붙여 둠: 이벤트 안에서 바깥 변수를 안 찾게)
+    if ($lockAt -ge 0) { $list.Tag = $lockAt; $list.Add_ItemCheck({ param($s, $e) if ($e.Index -eq $s.Tag) { $e.NewValue = [System.Windows.Forms.CheckState]::Unchecked } }) }
     [void](Add-PickerButton $p 'Right' '확인' 'OK')
     [void](Add-PickerButton $p 'Right' '취소' 'Cancel')
     $res = Show-PickerForm $p
     $out = New-DefaultFlags
     foreach ($k in @($out.Keys)) { if ($current.Contains($k)) { $out[$k] = [bool]$current[$k] } }   # 목록에 없는 항목(검색 색인)은 그대로
     for ($i = 0; $i -lt $keys.Count; $i++) { $out[$keys[$i]] = $list.GetItemChecked($i) }
+    if ($lockAt -ge 0) { $out['DefenderScan'] = $false }
     $f.Dispose()
     if ("$res" -ne 'OK') { return $null }
     return $out
@@ -1468,6 +1544,17 @@ function Show-StartupPicker($items, $want, [switch]$Restore) {
 $DefenderWant = [ordered]@{ ScanAvgCPULoadFactor = 20; DisableCpuThrottleOnIdleScans = $false; EnableLowCpuPriority = $true }
 function Test-DefenderWanted($p) { [bool]($p -and [int]$p.ScanAvgCPULoadFactor -eq 20 -and -not [bool]$p.DisableCpuThrottleOnIdleScans -and [bool]$p.EnableLowCpuPriority) }
 function Format-DefenderPref($p) { "CPU 평균 $($p.ScanAvgCPULoadFactor)% / PC 가 쉴 때도 제한 $(YesNo (-not [bool]$p.DisableCpuThrottleOnIdleScans)) / 낮은 우선순위 $(YesNo ([bool]$p.EnableLowCpuPriority))" }
+# Defender 가 이 PC 의 백신으로 돌고 있는지: @{ Ok; Reason }
+# 다른 백신(알약·V3 등)을 쓰면 Defender 는 꺼지거나 쉬고 있어서, 검사 설정을 바꾸거나 정의를 받아도 의미가 없음
+function Get-DefenderState {
+    $st = $null; try { $st = Get-MpComputerStatus -ErrorAction Stop } catch {}
+    $mode = if ($st) { "$($st.AMRunningMode)" } else { '' }
+    if ($st -and [bool]$st.AntivirusEnabled -and ($mode -eq '' -or $mode -eq 'Normal')) { return @{ Ok = $true; Reason = $null } }
+    $av = @()
+    try { $av = @(Get-CimInstance -Namespace 'root/SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop | ForEach-Object { "$($_.displayName)" } | Where-Object { $_ -and $_ -notmatch 'Defender' } | Select-Object -Unique) } catch {}
+    @{ Ok = $false; Reason = $(if ($av.Count) { "다른 백신($($av -join ', '))을 쓰고 있어요" } else { 'Defender 가 꺼져 있어요 (다른 백신을 쓰거나 Defender 를 끈 상태)' }) }
+}
+function Get-DefenderUpdateText { $d = Get-DefenderState; if ($d.Ok) { '예약 작업이 돌 때마다 (부팅 때·4시간마다)' } else { "건너뜀 - $($d.Reason)" } }
 # 검사 한 번: 시작 시각, 걸린 시간 (끝 시각이 시작보다 앞이면 아직 검사 중이거나 중간에 멈춘 것)
 function Get-ScanSeconds($a, $b) { if ($a -is [datetime] -and $b -is [datetime] -and $a.Year -ge 2000 -and $b -ge $a) { [int]($b - $a).TotalSeconds } }
 function Format-Duration([int]$s) { "$(if ($s -ge 60) { "$([Math]::Floor($s / 60))분 " })$($s % 60)초" }
@@ -1514,6 +1601,7 @@ function Show-DefenderPicker($a) {
 # 돌려줌: 골랐거나 건너뛰었으면 $true, 창에서 취소했으면 $false (부르는 쪽이 작업 전체를 멈춤). Defender 를 못 읽으면 창 없이 넘어감 (적용할 때 건너뜀)
 function Select-DefenderOption($flags) {
     if (-not $flags.DefenderScan) { return $true }
+    if (-not (Get-DefenderState).Ok) { $flags['DefenderScan'] = $false; return $true }   # 설정 창에서 고를 수 없게 막힘 (안내는 보고서에)
     $dp = Get-DefenderScanPref
     if ($null -eq $dp) { return $true }
     Head '[베타기능] Defender 예약 검사 (가볍게 / 그대로)'
@@ -1533,8 +1621,8 @@ function Set-DefenderScan {
 }
 
 # ============================== 시스템 구성요소 ==============================
+# Internet Explorer 기능(Browser.InternetExplorer)은 빼 둠: Windows 11 에서는 Edge 의 IE 모드가 이 기능을 써서, 지우면 IE 모드 사이트(관공서·은행 등)가 안 열림
 $CapPatterns = [ordered]@{
-    'Browser.InternetExplorer*'         = 'Internet Explorer 구성요소 (Edge 의 IE 모드는 그대로)'
     'Media.WindowsMediaPlayer*'         = '옛 Windows Media Player'
     'Microsoft.Windows.PowerShell.ISE*' = 'PowerShell ISE'
     'App.StepsRecorder*'                = '단계 레코더'
@@ -1555,6 +1643,18 @@ function Get-RecallState {
 }
 
 # ============================== OneDrive ==============================
+# 지금 계정 말고 OneDrive 폴더가 있는 계정 (Windows 사용자 목록의 프로필 위치마다 'OneDrive*' 폴더: 'OneDrive - 회사 이름' 도 포함)
+# 동기화 막기 정책은 PC 의 모든 계정에 걸려서, 그 계정의 클라우드 전용 파일도 PC 에서 못 열게 될 수 있음
+function Get-OtherOneDriveUsers {
+    $pl = 'SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+    $me = "$env:USERPROFILE".TrimEnd('\', '/')
+    foreach ($sid in @(Get-RegSubKeyNames $HKLM $pl)) {
+        if ($sid -notmatch '^S-1-(5-21|12-1)-') { continue }   # 사람 계정만 (로컬·Microsoft 계정 S-1-5-21, Entra ID S-1-12-1). 시스템 계정 제외
+        $p = [Environment]::ExpandEnvironmentVariables("$((Get-RegValue $HKLM "$pl\$sid" 'ProfileImagePath').Value)").TrimEnd('\', '/')
+        if (-not $p -or $p -eq $me -or -not (Test-Path -LiteralPath $p)) { continue }
+        if (@(Get-ChildItem -LiteralPath $p -Directory -Filter 'OneDrive*' -Force -ErrorAction SilentlyContinue).Count) { Split-Path $p -Leaf }
+    }
+}
 function Get-OneDriveInfo([switch]$NoScan) {
     $uninst = @()
     foreach ($s in @(@('HKEY_CURRENT_USER', 'Software\Microsoft\Windows\CurrentVersion\Uninstall\OneDriveSetup.exe', '사용자'),
@@ -1627,7 +1727,7 @@ function Test-LnkRunAsSafe([string]$path) { try { Test-LnkRunAs $path } catch { 
 # 문자열 밖의 주석만 지우고 읽음 (주소 안의 // 는 그대로)
 function Remove-JsonComments([string]$s) {
     $sb = New-Object System.Text.StringBuilder $s.Length
-    $i = 0; $inStr = $false
+    $i = 0; $inStr = $false; $hadComment = $false
     while ($i -lt $s.Length) {
         $c = $s[$i]
         if ($inStr) {
@@ -1638,10 +1738,12 @@ function Remove-JsonComments([string]$s) {
         }
         if ($c -eq '"') { $inStr = $true; [void]$sb.Append($c); $i++; continue }
         if ($c -eq '/' -and $i + 1 -lt $s.Length -and $s[$i + 1] -eq '/') {
+            $hadComment = $true
             while ($i -lt $s.Length -and $s[$i] -ne "`n") { $i++ }
             continue
         }
         if ($c -eq '/' -and $i + 1 -lt $s.Length -and $s[$i + 1] -eq '*') {
+            $hadComment = $true
             $e = $s.IndexOf('*/', $i + 2); if ($e -lt 0) { $i = $s.Length } else { $i = $e + 2 }
             continue
         }
@@ -1653,6 +1755,8 @@ function Remove-JsonComments([string]$s) {
         }
         [void]$sb.Append($c); $i++
     }
+    # 주석 앞의 쉼표는 남음 ('},' 뒤에 마지막 항목을 // 로 막아 둔 경우). 주석이 빠진 결과로 한 번 더 (5.1 은 끝 쉼표를 거부함)
+    if ($hadComment) { return Remove-JsonComments $sb.ToString() }
     return $sb.ToString()
 }
 function Read-TerminalSettings {
@@ -1679,22 +1783,35 @@ function Get-AppliedInfo {
     $bks = @(Get-Backups)
     if (-not $bks.Count) { return $null }
     $flags = [ordered]@{}; foreach ($k in $Do.Keys) { $flags[$k] = $false }
+    $flags['LockScreenOff'] = $null   # 잠금 화면은 끄기·켜기 둘 다 적용하므로 마지막에 정한 값 ($null = BeSffy 가 건드린 적 없음)
     $apps = @(); $def = $false; $skippedOd = $false; $bgApps = $null; $su = [ordered]@{}
     foreach ($b in $bks) {
         $st = Read-State $b.FullName
         foreach ($k in @($flags.Keys)) {
+            if ($k -eq 'LockScreenOff') { continue }
             # 예전 형식 백업(Applied 없음): 그때 설정과 같다고 봄. 나중에 생긴 항목(시작 프로그램·Defender)은 그때 없었으니 안 한 것으로
             $v = if ($st.Applied -and $null -ne $st.Applied.$k) { [bool]$st.Applied.$k } elseif ($k -in 'Startup', 'DefenderScan') { $false } else { [bool]$Do[$k] }
             if ($v) { $flags[$k] = $true }
         }
+        # v1.3 까지의 백업: 잠금 화면 끄기는 설정·정책 안에 있었음
+        if ($st.Applied -and $null -ne $st.Applied.LockScreenOff) { $flags['LockScreenOff'] = [bool]$st.Applied.LockScreenOff }
+        elseif ($(if ($st.Applied) { $st.Applied.Settings } else { $Do.Settings })) { $flags['LockScreenOff'] = $true }
+        # 메뉴 5 로 그 뒤 잠금 화면을 다시 켰음
+        if (Test-Path -LiteralPath (Join-Path $b.FullName 'lockscreen_on.txt')) { $flags['LockScreenOff'] = $false }
         # 시작 프로그램: 적용마다 바꾼 것 (같은 항목은 나중 것이 지금 값)
         if ($st.PSObject.Properties['Startup']) { foreach ($c in @($st.Startup)) { if ($c -and $c.Id) { $su["$($c.Id)"] = [pscustomobject]@{ Id = "$($c.Id)"; Want = [bool]$c.Want; Label = "$($c.Label)" } } } }
+        # 메뉴 5 로 그 뒤 다시 켠 것 (그 뒤로는 BeSffy 가 끈 상태가 아님)
+        $son = Join-Path $b.FullName 'startup_on.txt'
+        if (Test-Path -LiteralPath $son) { foreach ($id in (Read-NameList $son)) { $su.Remove("$id") } }
         # 메뉴 5 로 검색 색인을 다시 켰으면 그 뒤로는 '검색 색인 끄기'를 점검하지 않음 (나중 적용에서 다시 끄면 다시 점검)
         if (Test-Path -LiteralPath (Join-Path $b.FullName 'search_on.txt')) { $flags['DisableSearch'] = $false }
+        # 메뉴 6 에서 다른 계정을 위해 OneDrive 동기화 막기를 풀었으면 그 뒤로는 OneDrive 를 점검하지 않음 (다시 적용하면 다시 점검)
+        if (Test-Path -LiteralPath (Join-Path $b.FullName 'onedrive_sync_on.txt')) { $flags['OneDrive'] = $false }
         if ($st.DefaultUser) { $def = $true }
         if ($st.OneDriveSkipped) { $skippedOd = $true }
         # 백그라운드 예외 목록은 적용할 때마다 통째로 덮어쓰므로, 지금 레지스트리 = 마지막 적용의 목록
-        if ($st.PSObject.Properties['BgApps']) { $bgApps = @($st.BgApps | Where-Object { $_ }) }
+        # 설정·정책을 안 한 적용은 레지스트리를 안 바꿨으므로 그 목록은 기준이 아님
+        if ($st.PSObject.Properties['BgApps'] -and (-not $st.Applied -or $st.Applied.Settings)) { $bgApps = @($st.BgApps | Where-Object { $_ }) }
         # 메뉴 5 로 그 뒤에 바꾼 목록 (있으면 이게 지금 레지스트리)
         $ov = Join-Path $b.FullName 'bgapps_changed.txt'
         if (Test-Path -LiteralPath $ov) { $bgApps = Read-NameList $ov }
@@ -1706,7 +1823,7 @@ function Get-AppliedInfo {
 }
 function Write-Report([string]$kind, [string]$title, [string[]]$extra) {
     $file = Join-Path $script:ReportDir "${kind}_$($script:Stamp).txt"
-    $head = @("$AppName (Best SFF Optimizer) - $Credit (MIT License)", "$AppName 이 PC $title ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))") + @($extra | Where-Object { $_ }) +
+    $head = @("$AppName v$Version (Best SFF Optimizer) - $Credit (MIT License)", "$AppName 이 PC $title ($(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))") + @($extra | Where-Object { $_ }) +
             @("주의 $($script:Warn.Count)건") + @($script:Warn | ForEach-Object { "  - $_" })
     Write-TextFile $file (((@($head) + @($script:Out)) -join "`r`n") + "`r`n")
     return $file
@@ -1761,9 +1878,19 @@ function Invoke-Report {
     $strict  = [bool]($check -and $history)
     Show-SystemInfo
     if ($check) {
-        $flags = if ($strict) { $history.Flags } else { New-DefaultFlags }
+        # 기록이 없으면 '적용하면 바뀔 것' = 메뉴 2 가 쓸 저장된 선택 (없으면 기본값)
+        $flags = if ($strict) { $history.Flags } else { $o = Read-Options; if ($null -eq $o) { New-DefaultFlags } else { $o } }
         if ($strict) {
             Say "  적용 기록: $($history.Count)번 (마지막 $($history.Latest)). 그때 적용한 항목을 기준으로 점검해요."
+            # 메뉴 2 는 지금 저장된 선택만 적용하므로, 거기서 빠진 항목의 [주의] 는 메뉴 2 만으로는 안 고쳐짐
+            $saved = Read-Options
+            if ($null -ne $saved) {
+                $outK = @(@($OptLabels.Keys) + 'DisableSearch' | Where-Object { $history.Flags[$_] -and -not $saved[$_] })
+                if ($outK.Count) {
+                    $names = @($outK | ForEach-Object { if ($_ -eq 'DisableSearch') { '검색 색인 끄기' } else { ($OptLabels[$_] -split ' \(')[0] } })
+                    Say "  ※ 지금 저장된 선택에는 $($names -join ', ') 이(가) 빠져 있어요. 아래 [주의] 중 이 항목은 메뉴 2(적용)만으로는 다시 맞춰지지 않아요. 메뉴 1(미리보기)에서 다시 체크한 뒤 메뉴 2 를 실행하세요."
+                }
+            }
             # 백그라운드 예외는 '지금 고른 것'이 아니라 '적용했던 것'과 비교해야 함 (안 그러면 미리보기에서 바꾸기만 해도 다르다고 나옴)
             if ($null -ne $history.BgApps) { Set-BgExtra $history.BgApps }
             else { foreach ($r in $script:Reg) { if ($r.Name -eq 'LetAppsRunInBackground_ForceAllowTheseApps') { $r.Skip = '예전 적용이라 예외 목록을 기록 안 함 (다시 적용하면 점검돼요)' } } }
@@ -1779,6 +1906,8 @@ function Invoke-Report {
         $picked = Show-SettingsPicker $cur
         if ($null -eq $picked) { Stop-PreviewCancel '무엇을 적용할까요'; return }
         $flags = $picked
+        $dvp = Get-DefenderState
+        if (-not $dvp.Ok) { Say "  Defender: $($dvp.Reason) → [베타기능] Defender 예약 검사는 고를 수 없어요. 업데이트 잠금의 Defender 정의 받기도 건너뛰어요." }
         Say ("  적용할 항목: " + (@($flags.Keys | Where-Object { $flags[$_] -and $OptLabels.Contains($_) } | ForEach-Object { ($OptLabels[$_] -split ' \(')[0] }) -join ', '))   # .Split(' (') 는 5.1 에서 글자 하나씩 나눠 '앱'만 남음
         # 백그라운드 예외는 설정을 적용할 때만 고름
         $bgp = $null
@@ -1810,7 +1939,7 @@ function Invoke-Report {
             $apps0 = @(Get-AppStatus)
             if ($apps0.Count) {
                 Head '지울 앱 고르기'
-                $present0 = @($apps0 | ForEach-Object Name)
+                $present0 = @($apps0 | Where-Object Present | ForEach-Object Name)
                 $back0 = @(@($(if ($history) { $history.Apps })) | Where-Object { $_ -and $present0 -contains $_ })
                 $sel0 = Read-Selection   # 변수에 먼저 받음 (@(Read-Selection) 은 목록이 한 덩어리로 들어가 미리 체크가 안 됨)
                 $pre = @(@($sel0) + $back0 | Where-Object { $_ } | Sort-Object -Unique)
@@ -1844,7 +1973,8 @@ function Invoke-Report {
         $apps    = @(Get-AppStatus)
         $present = @($apps | ForEach-Object Name)
         $removed = if ($history) { @($history.Apps) } else { @() }
-        $back    = @($removed | Where-Object { $present -contains $_ })      # 지웠는데 다시 생긴 앱
+        $live    = @($apps | Where-Object Present | ForEach-Object Name)
+        $back    = @($removed | Where-Object { $live -contains $_ })      # 지웠는데 다시 생긴 앱 (파일 없는 기록만 남은 건 뺌)
         $sel     = Read-Selection
         if ($check) {
             Head '앱 (지금 남아 있는 것)'
@@ -1898,7 +2028,9 @@ function Invoke-Report {
                     if ($strict) { Say ("    OK {0}: {1}{2}" -f $r.Desc, $s.Now, $who) } else { Say ("       {0}: {1} (이미 됨){2}" -f $r.Desc, $s.Now, $who) }
                 } else {
                     $diffN++
-                    $hint = if ($r.Cat -eq 'Search') { ' 검색 색인을 쓰려고 일부러 켠 거면 메뉴 5(일부 옵션만 복구) → 2. 검색 색인 다시 켜기를 하면 점검에서 빠져요.' } else { '' }
+                    $hint = if ($r.Cat -eq 'Search') { ' 검색 색인을 쓰려고 일부러 켠 거면 메뉴 5(일부 옵션만 복구) → 2. 검색 색인 다시 켜기를 하면 점검에서 빠져요.' }
+                            elseif ($r.Cat -eq 'LockScreen') { ' 잠금 화면을 쓰려고 일부러 켠 거면 메뉴 5(일부 옵션만 복구) → 4. 잠금 화면 다시 켜기를 하면 점검에서 빠져요.' }
+                            elseif ($r.Cat -eq 'LockScreenOn') { ' 메뉴 5(일부 옵션만 복구) → 4. 잠금 화면 다시 켜기로 다시 켤 수 있어요.' } else { '' }
                     if ($strict) { Warn ("다름: $($r.Desc) - 지금 $($s.Now), 맞는 값 $($s.Target) ($root\$($r.Key)$(if ($r.Name) { " $($r.Name)" }))$hint") }
                     else { Say ("    *  {0}: {1} → {2}{3}" -f $r.Desc, $s.Now, $s.Target, $who) }
                 }
@@ -1964,7 +2096,7 @@ function Invoke-Report {
         $recOff = @($blocked | Where-Object Rec)
         if ($recOff.Count) { Say "  ※ 막혀 있는 추천(★) 항목 - 동기화·알림·공유가 안 될 수 있어요: $(($recOff | ForEach-Object { "$($_.Label) [$($_.Kind)]" }) -join ', ')$(if ($strict) { ' (필요하면 메뉴 5(일부 옵션만 복구) 에서 다시 켜세요)' })" }
         # 예전 버전(빈 창)으로 적용해서 예외가 휴대폰과 연결만 들어간 경우 알림 (일부러 비운 경우(#NONE)는 빼고)
-        if ($strict -and $null -ne $history.BgApps -and -not @($history.BgApps).Count -and $null -eq (Read-BgSelection)) {
+        if ($strict -and $recOff.Count -and $null -ne $history.BgApps -and -not @($history.BgApps).Count -and $null -eq (Read-BgSelection)) {
             Warn ("백그라운드 예외가 휴대폰과 연결만 적용돼 있어요 (예전 버전에서 고르는 창이 빈칸으로 뜬 문제). " +
                   "그래서 스토어에서 설치한 앱이 모두 백그라운드에서 막혀 있어요" +
                   $(if ($recOff.Count) { " - 특히 $(($recOff | ForEach-Object Label) -join ', ')" } else { '' }) +
@@ -2024,7 +2156,7 @@ function Invoke-Report {
         }
         Say "  버전 고정: $(if ($script:DisplayVersion) { $script:DisplayVersion } else { '건너뜀 (버전 이름을 못 읽음)' })"
         $task = Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
-        Say ("  예약 작업 {0}{1} (부팅 때·매일 다시 잠금): {2}{3}" -f $TaskPath, $TaskName, $(if ($task) { "있음 ($($task.State))" } else { '없음' }), $(if ($strict) { '' } elseif ($task) { ' → 다시 등록' } else { ' → 새로 만듦' }))
+        Say ("  예약 작업 {0}{1} (부팅 때·4시간마다 다시 잠금, Defender 정의도 받음): {2}{3}" -f $TaskPath, $TaskName, $(if ($task) { "있음 ($($task.State))" } else { '없음' }), $(if ($strict) { '' } elseif ($task) { ' → 다시 등록' } else { ' → 새로 만듦' }))
         if ($strict -and -not $task) { Warn '예약 작업 WU-RePause 가 없어요. 메뉴 2(적용)를 다시 실행하세요.' }
         elseif ($strict -and "$($task.State)" -eq 'Disabled') { Warn "예약 작업 WU-RePause 가 꺼져 있어요 (작업 스케줄러 → $AppName 에서 사용)." }
         $haveLinks = @($WuLinks.Keys | Where-Object { Test-Path -LiteralPath (Join-Path $script:PublicDesk $_) })
@@ -2032,13 +2164,14 @@ function Invoke-Report {
         Say "  바탕화면(모든 사용자) 켜기/끄기 바로가기: $($haveLinks.Count)/$($WuLinks.Count)개 / $AppName 도구($($script:ToolsDst)): $($haveTools.Count)/$($ToolFiles.Count)개"
         if ($strict -and $haveLinks.Count -lt $WuLinks.Count) { Warn "바탕화면 업데이트 켜기/끄기 바로가기가 $($WuLinks.Count - $haveLinks.Count)개 없어요. 메뉴 2(적용)를 다시 실행하세요." }
         if ($strict -and $haveTools.Count -lt $ToolFiles.Count) { Warn "$AppName 도구 스크립트가 $($ToolFiles.Count - $haveTools.Count)개 없어요. 적용을 다시 하세요." }
+        Say "  Defender 정의 받기: $(Get-DefenderUpdateText)"
     }
 
     # ---- OneDrive ----
     if ($flags.OneDrive -or ($strict -and $history.OneDriveSkipped)) {
         Head 'OneDrive'
         $od = Get-OneDriveInfo -NoScan:$strict
-        if ($strict -and $history.OneDriveSkipped -and -not $flags.OneDrive) { Say '  적용 때 건너뜀 (OneDrive 안으로 옮겨진 폴더가 있었음)' }
+        if ($strict -and $history.OneDriveSkipped -and -not $flags.OneDrive) { Say '  적용 때 건너뜀 (옮겨진 폴더·클라우드 전용 파일·다른 계정의 OneDrive 때문에)' }
         if (-not $od.Installed) { Say "  설치돼 있지 않음$(if (-not $strict) { ' (동기화 막기 정책만 적용)' })" }
         else {
             foreach ($u in $od.Uninstall) { Say "  설치됨 ($($u.Scope), $($u.Version)) / 실행 중: $(YesNo $od.Running)" }
@@ -2122,7 +2255,7 @@ function Invoke-Apply {
     # 이번 적용에서 실제로 할 것: 미리보기에서 창으로 고른 값(selected_options.txt). 없으면 지금 고르는 창을 엶
     # 고르는 창 어디서든 취소하면 적용 전체를 멈춤 (고른 값도 저장하지 않음)
     $flags = Read-Options
-    $saveFlags = $false
+    $saveFlags = $false; $saveApps = $false; $saveSu = $false
     if ($null -eq $flags) {
         Say '  적용할 항목을 아직 안 골랐어요. 고르는 창을 열어요. (어느 창에서든 취소하면 적용을 멈춰요)'
         $flags = Show-SettingsPicker (New-DefaultFlags)
@@ -2142,13 +2275,14 @@ function Invoke-Apply {
             Say '  지울 앱을 아직 안 골랐어요. 고르는 창을 열어요.'
             $chosen = Show-AppPicker $apps @()
             if ($null -eq $chosen) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
-            Save-Selection $chosen
+            $saveApps = $true   # 저장은 모든 창을 확인한 뒤에 (뒤 창에서 취소하면 저장 안 함)
         }
         $sel  = @(@($chosen) | Where-Object { $_ -and $present -contains $_ } | Sort-Object -Unique)
         $gone = @(@($chosen) | Where-Object { $_ -and $present -notcontains $_ })
         if ($gone.Count) { Say "  고른 앱 중 이미 없는 것 $($gone.Count)개는 건너뜀: $($gone -join ', ')" }
         $history = Get-AppliedInfo
-        $back = @(if ($history) { $history.Apps | Where-Object { $present -contains $_ -and $sel -notcontains $_ } })
+        $live = @($apps | Where-Object Present | ForEach-Object Name)
+        $back = @(if ($history) { $history.Apps | Where-Object { $live -contains $_ -and $sel -notcontains $_ } })
         if ($back.Count -and (Ask ("  전에 지웠던 앱이 다시 생겼어요: " + (($back | ForEach-Object { Get-AppLabel $_ }) -join ', ') + '. 이것도 다시 지울까요?'))) {
             $sel = @($sel + $back)
         }
@@ -2162,15 +2296,20 @@ function Invoke-Apply {
             if ($null -eq $pick) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
             $suPlan = @(Get-StartupChanges $su $pick)
         }
-        Save-StartupSelection $suPlan; Set-StartupPlan $suPlan
+        Set-StartupPlan $suPlan; $saveSu = $true
     }
+    # 고르는 창을 모두 확인한 뒤에 한꺼번에 저장 (아래에서 이번 적용용으로 Apps 를 끌 수 있어서 그 전에)
+    if ($saveApps) { Save-Selection $chosen }
+    if ($saveSu) { Save-StartupSelection $suPlan }
     if ($saveFlags) { Save-Options $flags }   # 창을 모두 고른 뒤에 저장 (아래에서 이번 적용용으로 Apps 를 끌 수 있어서 그 전에)
     if (-not $sel.Count) { $flags.Apps = $false }
     # Defender 를 못 쓰는 PC (다른 백신 등) 면 건너뜀
     $defNow = $null
     if ($flags.DefenderScan) {
         $defNow = Get-DefenderScanPref
-        if ($null -eq $defNow) { Say "  Defender 설정을 읽지 못해 'Defender 예약 검사 가볍게'는 건너뛰어요 ($($script:DefenderErr))"; $flags.DefenderScan = $false }
+        $dva = Get-DefenderState
+        if (-not $dva.Ok) { Say "  $($dva.Reason). '[베타기능] Defender 예약 검사 가볍게'는 건너뛰어요"; $flags.DefenderScan = $false }
+        elseif ($null -eq $defNow) { Say "  Defender 설정을 읽지 못해 '[베타기능] Defender 예약 검사 가볍게'는 건너뛰어요 ($($script:DefenderErr))"; $flags.DefenderScan = $false }
     }
 
     # ---- OneDrive ----
@@ -2182,8 +2321,20 @@ function Invoke-Apply {
         if ($od.Installed -and $od.Moved.Count) {
             Warn ("OneDrive 안으로 옮겨진 폴더가 있어 OneDrive 는 건너뛰어요: " + ($od.Moved -join ', ') + '. OneDrive 설정 → 동기화 및 백업 → 백업 관리에서 먼저 끄세요.')
             $flags.OneDrive = $false; $odSkipped = $true
-        } elseif ($od.Installed -and $od.CloudOnly) {
-            if (-not (Ask "  OneDrive 에 클라우드에만 있는 파일이 $($od.CloudOnly)개 있어요. 제거하면 PC 에서 열 수 없게 돼요 (클라우드에는 남음). 그래도 제거할까요?")) {
+        }
+        # 다른 계정도 OneDrive 를 쓰거나, 실행 계정과 로그인한 계정이 달라 로그인한 계정을 확인 못 했으면 물어봄 (Enter 는 아니요)
+        $others = @(Get-OtherOneDriveUsers)
+        if ($flags.OneDrive -and ($others.Count -or $script:UserMismatch)) {
+            $who = if ($others.Count) { "다른 계정($($others -join ', '))에도 OneDrive 폴더가 있어요" } else { '실행 계정과 로그인한 계정이 달라서, 로그인한 계정의 OneDrive 는 확인하지 못했어요' }
+            if (-not (Ask "  $who. OneDrive 를 지우고 동기화를 막으면 PC 의 모든 계정에 적용돼서, 그 계정의 바탕 화면·문서 중 클라우드에만 있는 파일을 이 PC 에서 열 수 없게 될 수 있어요 (파일은 클라우드에 남아요). 그래도 OneDrive 를 정리할까요?")) {
+                $flags.OneDrive = $false; $odSkipped = $true; Say '  OneDrive 는 그대로 둬요.'
+            }
+        }
+        # 클라우드에만 있는 파일: 찾았거나, 파일이 많아 60초 안에 다 확인하지 못했으면 물어봄
+        if ($flags.OneDrive -and $od.Installed -and ($od.CloudOnly -or $od.Partial)) {
+            $what = if ($od.CloudOnly) { "클라우드에만 있는 파일이 $($od.CloudOnly)개 있어요$(if ($od.Partial) { ' (파일이 많아 일부만 확인해서 더 있을 수 있어요)' })" }
+                    else { "파일이 많아 60초 동안 $($od.Scanned)개만 확인해서, 클라우드에만 있는 파일이 있는지 다 확인하지 못했어요" }
+            if (-not (Ask "  OneDrive 에 $what. 제거하면 그런 파일은 PC 에서 열 수 없게 돼요 (클라우드에는 남음). 그래도 제거할까요?")) {
                 $flags.OneDrive = $false; $odSkipped = $true; Say '  OneDrive 는 그대로 둬요.'
             }
         }
@@ -2194,8 +2345,10 @@ function Invoke-Apply {
     $wsOn = [bool](Get-Service -Name WSearch -ErrorAction SilentlyContinue)
     $searchOn = (-not $flags.DisableSearch) -and $wsOn -and ((Get-ScTypeFromRegistry 'WSearch') -eq 'disabled')
     $searchTxt = if ($flags.DisableSearch) { '끄기' } elseif ($searchOn) { '켜 두기 (지금 꺼져 있어서 다시 켬)' } else { '켜 두기' }
-    Say ("  시스템 구성요소 삭제: {0} / 설정·정책: {1} / 업데이트 잠금: {2} / OneDrive 제거: {3} / 다크 모드: {4}" -f
-        (YesNo $flags.SystemComponents), (YesNo $flags.Settings), (YesNo $flags.UpdateLock), (YesNo $flags.OneDrive), (YesNo $flags.DarkMode))
+    $lockOff = Test-LockScreenOff
+    $lockTxt = if ($flags.LockScreenOff) { '끄기' } elseif ($lockOff) { '켜 두기 (지금 꺼져 있어서 다시 켬)' } else { '켜 두기' }
+    Say ("  시스템 구성요소 삭제: {0} / 설정·정책: {1} / 잠금 화면: {5} / 업데이트 잠금: {2} / OneDrive 제거: {3} / 다크 모드: {4}" -f
+        (YesNo $flags.SystemComponents), (YesNo $flags.Settings), (YesNo $flags.UpdateLock), (YesNo $flags.OneDrive), (YesNo $flags.DarkMode), $lockTxt)
     if ($wsOn) { Say "  검색 색인: $searchTxt" }
     $suAct = @(Get-ActiveRegItems $flags | Where-Object Cat -eq 'Startup')
     if ($flags.Startup) { Say "  시작 프로그램: $(if ($suAct.Count) { "끔 $(@($script:StartupPlan | Where-Object { -not $_.Want }).Count)개 / 켬 $(@($script:StartupPlan | Where-Object Want).Count)개" } else { '바꿀 것 없음' })" }
@@ -2203,7 +2356,7 @@ function Invoke-Apply {
     foreach ($r in Get-SkippedRegItems $flags) { Say "  건너뜀: $($r.Desc) - $($r.Skip)" }
     if (-not (Ask "`n위 내용으로 적용할까요?")) { Say '취소했어요. 아무것도 바꾸지 않았어요.'; return }
 
-    $S = @{ Bk = (Join-Path $script:BackupRoot $script:Stamp); Flags = $flags; Sel = $sel; Od = $od; OdSkipped = $odSkipped; DefOk = $false; Defender = $defNow }
+    $S = @{ Bk = (Join-Path $script:BackupRoot $script:Stamp); Flags = $flags; Sel = $sel; Od = $od; OdSkipped = $odSkipped; DefOk = $false; Defender = $(if ($flags.DefenderScan) { $defNow }) }
     New-Item -ItemType Directory -Force -Path $S.Bk | Out-Null
 
     Head '1. 복원 지점'
@@ -2293,13 +2446,15 @@ function Backup-BeforeApply($S, $items) {
     $rs = ''; if ($S.Flags.Settings) { try { $rs = "$((Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState)" } catch {} }
     $state = [ordered]@{
         Version         = 9
+        AppVersion      = $Version   # 적용한 BeSffy 버전 (나중에 예전 버전 정리 등에서 씀)
         Stamp           = $script:Stamp
         User            = Get-CurrentUserName
         Applied         = $S.Flags
         BgApps          = @($script:BgExtra)
         OneDriveSkipped = $S.OdSkipped
-        HadTask         = [bool](Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue)
-        HadTools        = [bool](Test-Path -LiteralPath $script:ToolsDst)
+        # 예전(LiteTools) 이름으로 잠가 둔 PC 도 '이미 있었음'으로 봄 → 이번 적용만 되돌려도 잠금 도구가 남아 계속 동작
+        HadTask         = [bool]((Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue) -or (Get-ScheduledTask -TaskPath $TaskPathOld -TaskName $TaskName -ErrorAction SilentlyContinue))
+        HadTools        = [bool]((Test-Path -LiteralPath $script:ToolsDst) -or (Test-Path -LiteralPath $script:ToolsDstOld))
         HadLinks        = @($WuLinks.Keys | Where-Object { Test-Path -LiteralPath (Join-Path $script:PublicDesk $_) })
         DefaultUser     = $S.DefOk
         Services        = $svcs
@@ -2409,11 +2564,15 @@ function Get-WuBodies {
     $h = @{}
     $h['WU-Pause.ps1'] = @'
 # Windows Update 장기 일시정지 (BeSffy)
-# - 예약 작업(\BeSffy\WU-RePause)이 부팅 때와 매일 실행해 일시정지를 유지합니다.
+# - 예약 작업(\BeSffy\WU-RePause)이 부팅 때와 4시간마다 실행해 일시정지를 유지합니다.
+# - 그때마다 Defender 정의(바이러스 DB)도 받습니다. 업데이트를 잠그면 Windows 업데이트로는 정의가 하루 넘게 안 들어와서요.
 # - '업데이트 켜기'로 켜 둔 상태(UpdateMode=On)면 건드리지 않지만, 켠 지 3일이 지나면
 #   '끄기'를 안 눌렀어도 자동으로 다시 끄고 일시정지합니다.
 # - -Force 를 주면 상태와 관계없이 일시정지를 기록합니다.
 param([switch]$Force)
+
+# 예약 작업으로 돌 때만 (적용·'업데이트 끄기' 때는 -Force 라 기다리지 않게 건너뜀). Defender 를 안 쓰는 PC 면 그냥 넘어감
+if (-not $Force) { try { Update-MpSignature -ErrorAction Stop } catch {} }
 
 $AutoOffDays = 3
 $flagKey = 'HKLM:\SOFTWARE\BeSffy'
@@ -2490,21 +2649,39 @@ Read-Host '  Enter를 누르면 창이 닫혀요'
     return $h
 }
 
-function Set-UpdateLock {
+# 켜기/끄기 상태 키의 값(UpdateMode, UpdateModeSince)을 지우고 빈 키도 지움. 지웠으면 $true
+function Remove-WuFlagKey([string]$key) {
+    foreach ($n in 'UpdateMode', 'UpdateModeSince') { Remove-RegValueDirect $HKLM $key $n }
+    return (Remove-RegKeyIfEmpty $HKLM $key)
+}
+# 업데이트 켜기/끄기 도구, 예약 작업, 바탕화면 바로가기를 지금 버전으로 설치 (잠금·켜기 상태는 건드리지 않음). 적용과 메뉴 6 이 같이 씀
+function Install-WuTools {
     $dst = $script:ToolsDst
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     $bodies = Get-WuBodies   # 프로그램 안에 품은 WU 스크립트 (별도 폴더 필요 없음)
     foreach ($n in $ToolFiles) { Write-TextFile (Join-Path $dst $n) $bodies[$n] 'utf8bom' }
-    Set-RegDirect $HKLM $FlagKey 'UpdateMode' 'String' 'Off'
-    Invoke-WuPause
     $ps = $script:PowerShellExe
     $action    = New-ScheduledTaskAction -Execute $ps -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $dst 'WU-Pause.ps1')`""
     # -At 는 날짜/시간 개체로 (언어·지역이 다른 PC 에서 '3am' 같은 글자가 안 먹힐 수 있어서)
     $at3 = [datetime]::Today.AddHours(3)
-    $triggers  = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -Daily -At $at3))
+    # 매일 3시부터 4시간마다 (Defender 정의도 그때 받음)
+    $daily = New-ScheduledTaskTrigger -Daily -At $at3
+    $daily.Repetition = (New-ScheduledTaskTrigger -Once -At $at3 -RepetitionInterval (New-TimeSpan -Hours 4) -RepetitionDuration (New-TimeSpan -Days 1)).Repetition
+    $triggers  = @((New-ScheduledTaskTrigger -AtStartup), $daily)
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
     $settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -Action $action -Trigger $triggers -Principal $principal -Settings $settings -Force | Out-Null
+    # 예전(LiteTools) 이름의 작업이 남아 있으면 지움: 그 작업은 새 '업데이트 켜기' 상태를 몰라서 켜 둔 업데이트를 하루 안에 다시 잠금
+    if (Get-ScheduledTask -TaskPath $TaskPathOld -TaskName $TaskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskPath $TaskPathOld -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+        Say "  예전 이름의 예약 작업($TaskPathOld$TaskName)을 지우고 새 작업으로 바꿈"
+    }
+    # 예전 이름의 켜기/끄기 상태는 새 이름으로 옮기고(새 이름에 없을 때만), 예전 도구 폴더·상태 키는 지움 (PC 에 찌꺼기를 안 남김)
+    if (-not (Get-RegValue $HKLM $FlagKey 'UpdateMode').Exists) {
+        foreach ($n in 'UpdateMode', 'UpdateModeSince') { $v = Get-RegValue $HKLM $FlagKeyOld $n; if ($v.Exists) { Set-RegDirect $HKLM $FlagKey $n 'String' "$($v.Value)" } }
+    }
+    if (Remove-WuFlagKey $FlagKeyOld) { Say "  예전 이름의 상태 키(HKLM\$FlagKeyOld) 지움" }
+    if (Test-Path -LiteralPath $script:ToolsDstOld) { Remove-Item -LiteralPath $script:ToolsDstOld -Recurse -Force -ErrorAction SilentlyContinue; Say "  예전 도구 폴더 지움 ($($script:ToolsDstOld))" }
     New-Item -ItemType Directory -Force -Path $script:PublicDesk | Out-Null
     # 켜기/끄기 아이콘을 다르게 (바탕화면에서 한눈에 구분). imageres.dll 아이콘 (버전마다 모양은 조금 달라도 서로 구분됨)
     $imageres = Join-Path $env:SystemRoot 'System32\imageres.dll'
@@ -2512,6 +2689,11 @@ function Set-UpdateLock {
     foreach ($n in $WuLinks.Keys) {
         New-RunAsShortcut (Join-Path $script:PublicDesk $n) $ps "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $dst $WuLinks[$n])`"" $wuIcon[$WuLinks[$n]]
     }
+}
+function Set-UpdateLock {
+    Set-RegDirect $HKLM $FlagKey 'UpdateMode' 'String' 'Off'
+    # 예약 작업을 못 만들어도(작업 스케줄러 오류) 일시정지는 걸어 둠. 도구 파일은 Install-WuTools 가 작업보다 먼저 씀
+    try { Install-WuTools } finally { Invoke-WuPause }
     # 확인
     $exp  = "$((Get-RegValue $HKLM 'SOFTWARE\Microsoft\WindowsUpdate\UX\Settings' 'PauseUpdatesExpiryTime').Value)"
     $task = Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -2519,6 +2701,7 @@ function Set-UpdateLock {
     if ($exp -ne $PauseEnd) { Warn "일시정지 만료가 $PauseEnd 로 들어가지 않았어요 (지금: $(if ($exp) { $exp } else { '없음' }))" }
     if (-not $task) { Warn '예약 작업 WU-RePause 를 만들지 못했어요' }
     if ($links.Count -lt $WuLinks.Count) { Warn '바탕화면 업데이트 켜기/끄기 바로가기를 다 만들지 못했어요' }
+    Say "  Defender 정의 받기: $(Get-DefenderUpdateText)"
     Say "  일시정지 만료: $exp / 버전 고정: $(if ($script:DisplayVersion) { $script:DisplayVersion } else { '건너뜀' }) / 예약 작업 $TaskPath$TaskName / 바탕화면 켜기·끄기 바로가기 $($links.Count)개"
 }
 
@@ -2558,10 +2741,11 @@ function Remove-Apps($S) {
     } finally {
         # 실제로 남은 것만 알리고, 지워진 것만 기록 (점검 때 '다시 생김' 판단에 씀)
         Clear-AppxCache
-        $users = @(Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue)
-        $prov  = @(Get-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue)
+        $users = $null; $prov = $null
+        try { $users = @(Get-AppxPackage -AllUsers -ErrorAction Stop); $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop) }
+        catch { Warn "앱을 지운 뒤 정말 지워졌는지 확인하지 못했어요 ($("$($_.Exception.Message)".Trim())). 이번에 지운 앱은 기록하지 않아요 (그래서 나중에 다시 생겨도 알려 주지 못해요). 메뉴 3(점검)으로 남은 앱을 확인하세요." }
         $gone = New-Object System.Collections.Generic.List[string]
-        foreach ($n in $S.Sel) {
+        foreach ($n in $(if ($null -ne $prov) { $S.Sel })) {
             $u = @($users | Where-Object Name -eq $n)
             $p = @($prov | Where-Object DisplayName -eq $n)
             if ($u.Count) { Warn "$(Get-AppLabel $n) ($n) 이(가) 아직 설치돼 있어요" }
@@ -2600,14 +2784,22 @@ function Invoke-Undo {
     if (-not (Ask '되돌릴까요?')) { Say '  취소했어요. 아무것도 바꾸지 않았어요.'; return }
     $done = Join-Path $script:BackupRoot "undone_$($script:Stamp)"
     New-Item -ItemType Directory -Force -Path $done | Out-Null
+    $kept = $null
     foreach ($b in $all) {
+        $script:UndoStop = $null
         try { Undo-OneBackup $b.FullName }
         catch { Warn "되돌리기 중 오류 ($($b.Name)), 나머지는 계속해요: $($_.Exception.Message)" }
-        # 실패해도 옮김: 남겨 두면 다음 되돌리기에서 이 백업만 다시 적용돼 '첫 적용 뒤' 상태로 돌아가 버림
+        # 레지스트리 도구를 아예 못 돌렸으면 이 백업과 그보다 오래된 백업은 그대로 둠 → 원인을 고친 뒤 메뉴 4 를 다시 하면 이어서 되돌림
+        if ($script:UndoStop) {
+            Warn "레지스트리를 되돌리는 도구(reg.exe)를 실행하지 못해 $($b.Name) 부터는 되돌리지 않고 남겨 뒀어요 ($($script:UndoStop)). 백신이 BeSffy 폴더의 regtool\BeSffyReg.exe 를 막았는지 확인한 뒤 메뉴 4(되돌리기)를 다시 실행하세요."
+            $kept = $b.Name; break
+        }
+        # 다른 단계가 실패해도 옮김: 남겨 두면 다음 되돌리기에서 이 백업만 다시 적용돼 '첫 적용 뒤' 상태로 돌아가 버림
         Move-Item -LiteralPath $b.FullName -Destination $done -Force
     }
     Head '끝'
-    Say '  되돌리기 끝. 다시 시작해야 모두 원래대로 돌아와요.'
+    if ($kept) { Say "  되돌리기를 $kept 앞에서 멈췄어요. 남은 백업은 다음 되돌리기 때 이어서 되돌려요." }
+    else { Say '  되돌리기 끝. 다시 시작해야 모두 원래대로 돌아와요.' }
     Say "  되돌린 백업은 $done 로 옮겨 뒀어요."
     $file = Write-Report 'undo' '되돌리기 결과'
     Show-WarnSummary
@@ -2626,13 +2818,16 @@ function Undo-OneBackup([string]$bk) {
         Say '  검색 색인: 켜기 전 상태(꺼짐)로 되돌림'
     }
     # 1. 레지스트리: 지운 키 복원 → 값 되돌림 → 적용 때 새로 생긴 빈 키 정리
+    # reg 도구를 아예 못 돌리면(Code -1) 여기서 멈춤: 레지스트리를 못 되돌린 채 서비스 등만 되돌리면 상태가 섞임
     foreach ($f in @(Get-ChildItem -LiteralPath $bk -Filter 'deleted_key_*.reg' -File | Where-Object Name -notlike 'deleted_key_default_*')) {
         $r = Import-Reg $f.FullName
+        if ($r.Code -eq -1) { $script:UndoStop = $r.Text; return }
         if ($r.Code -eq 0) { Say "  키 복원: $($f.Name)" } else { Warn "키 복원 실패: $($f.Name) ($($r.Text))" }
     }
     $u = Join-Path $bk 'undo_values.reg'
     if (Test-Path -LiteralPath $u) {
         $r = Import-Reg $u
+        if ($r.Code -eq -1) { $script:UndoStop = $r.Text; return }
         if ($r.Code -eq 0) { Say '  레지스트리 값 되돌림' } else { Warn "레지스트리 값 일부를 되돌리지 못했어요 ($($r.Text))" }
     }
     $n = Remove-NewKeys $st.NewKeys
@@ -2653,7 +2848,7 @@ function Undo-OneBackup([string]$bk) {
     }
 
     # 2. 서비스: 되돌린 레지스트리 시작 유형을 서비스 관리자에도 반영하고, 켜져 있던 건 다시 켬
-    if ($st.Services) {
+    try { if ($st.Services) {
         foreach ($p in $st.Services.PSObject.Properties) {
             $status = if ($p.Value -is [string]) { $p.Value } else { "$($p.Value.Status)" }   # 예전 형식: 상태만 있음
             if (-not (Get-Service -Name $p.Name -ErrorAction SilentlyContinue)) { continue }
@@ -2664,7 +2859,7 @@ function Undo-OneBackup([string]$bk) {
                 catch { Say "  $($p.Name): 지금 켜지 못했어요 (다시 시작하면 원래대로 켜져요)" }
             } elseif ($sc) { Say "  서비스 시작 유형 되돌림: $($p.Name) ($sc)" }
         }
-    }
+    } } catch { Warn "서비스 되돌리기 실패: $($_.Exception.Message)" }
 
     # 2-2. Defender 예약 검사: 적용 전 값으로
     if ($st.PSObject.Properties['Defender'] -and $st.Defender) {
@@ -2673,10 +2868,14 @@ function Undo-OneBackup([string]$bk) {
     }
 
     # 3. 업데이트 잠금: 적용 전에 없던 것만 지움 (예전 LiteTools 이름으로 만든 것도 같이 정리)
+    try {
     if ($st.HadTask -eq $false) {
-        Unregister-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskPath $TaskPathOld -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
-        Say '  예약 작업 WU-RePause 지움'
+        foreach ($tp in $TaskPath, $TaskPathOld) {
+            if (Get-ScheduledTask -TaskPath $tp -TaskName $TaskName -ErrorAction SilentlyContinue) {
+                Unregister-ScheduledTask -TaskPath $tp -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+                Say "  예약 작업 $tp$TaskName 지움"
+            }
+        }
     }
     $hadLinks = if ($null -ne $st.HadLinks) { @($st.HadLinks) } elseif ($st.HadTools) { @($WuLinks.Keys) } else { @() }
     $rm = @($WuLinks.Keys | Where-Object { $hadLinks -notcontains $_ -and (Test-Path -LiteralPath (Join-Path $script:PublicDesk $_)) })
@@ -2686,7 +2885,10 @@ function Undo-OneBackup([string]$bk) {
         foreach ($d in @($script:ToolsDst, $script:ToolsDstOld)) {
             if ($d -and (Test-Path -LiteralPath $d)) { Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue; Say "  도구 폴더 지움 ($d)" }
         }
+        # 이 적용 전에는 BeSffy 잠금이 없었으므로 켜기/끄기 상태 키도 지움 (메뉴 6 이 옮겨 만든 것, 예전 이름 포함)
+        foreach ($k in $FlagKey, $FlagKeyOld) { if (Remove-WuFlagKey $k) { Say "  상태 키 지움 (HKLM\$k)" } }
     }
+    } catch { Warn "업데이트 잠금 되돌리기 실패: $($_.Exception.Message)" }
 
     # 4. 터미널
     try { Undo-Terminal $bk } catch { Warn "터미널 설정 되돌리기 실패: $($_.Exception.Message)" }
@@ -2694,27 +2896,32 @@ function Undo-OneBackup([string]$bk) {
     # 5. 시작 메뉴 바로가기: 바꾼 것(관리자 실행 표시)만 되돌림. 그 뒤 앱 업데이트로 바뀐 바로가기도 망가지지 않게
     $ll = Join-Path $bk 'lnk\list.json'
     $raw = if (Test-Path -LiteralPath $ll) { Read-TextFile $ll } else { '' }
-    if ($raw -and $raw.Trim()) {
+    try { if ($raw -and $raw.Trim()) {
         $n = 0
         # PowerShell 5.1 의 ConvertFrom-Json 은 배열을 펼치지 않고 통째로 하나로 내보냄 → 변수에 받은 뒤 foreach (@() 로 감싸면 안 됨)
         $arr = $raw | ConvertFrom-Json
         foreach ($l in $arr) {
             if (-not $l -or -not $l.Path) { continue }
             try {
+                # 사본은 이 백업 폴더 안에서 파일 이름으로 찾음 (목록에는 전체 경로가 적혀 있어서 BeSffy 폴더를 옮기면 그 경로로는 못 찾음)
+                $copy = if ($l.Backup) { Join-Path $bk "lnk\$(Split-Path $l.Backup -Leaf)" }
+                if ($copy -and -not (Test-Path -LiteralPath $copy) -and (Test-Path -LiteralPath $l.Backup)) { $copy = $l.Backup }
                 # 예전 형식 백업은 원래부터 관리자 실행이던 바로가기도 목록에 있음 → 백업본이 관리자 실행이면 그대로 둠
-                $wasRunAs = [bool]($l.Backup -and (Test-Path -LiteralPath $l.Backup) -and (Test-LnkRunAsSafe $l.Backup))
+                $wasRunAs = [bool]($copy -and (Test-Path -LiteralPath $copy) -and (Test-LnkRunAsSafe $copy))
                 if (Test-Path -LiteralPath $l.Path) { if (-not $wasRunAs) { Clear-LnkRunAs $l.Path; $n++ } }
-                elseif ($l.Backup -and (Test-Path -LiteralPath $l.Backup) -and (Test-Path -LiteralPath (Split-Path $l.Path))) { Copy-Item -LiteralPath $l.Backup -Destination $l.Path -Force; $n++ }
+                elseif ($copy -and (Test-Path -LiteralPath $copy) -and (Test-Path -LiteralPath (Split-Path $l.Path))) { Copy-Item -LiteralPath $copy -Destination $l.Path -Force; $n++ }
             } catch { Warn "바로가기 되돌리기 실패: $($l.Path) ($($_.Exception.Message))" }
         }
         Say "  시작 메뉴 바로가기 ${n}개 되돌림"
-    }
+    } } catch { Warn "바로가기 되돌리기 실패: $($_.Exception.Message)" }
 
-    # 6. 예약된 저장소
-    if ("$($st.ReservedStorage)" -eq 'Enabled') {
+    # 6. 예약된 저장소. 예전 버전(v7 이하)은 끄면서 원래 상태를 기록하지 않았음 → Windows 기본값(켜짐)이었다고 봄
+    $rsOld = -not $st.PSObject.Properties['ReservedStorage']
+    if ($rsOld -or "$($st.ReservedStorage)" -eq 'Enabled') {
         try {
             if ("$((Get-WindowsReservedStorageState -ErrorAction Stop).ReservedStorageState)" -ne 'Enabled') {
-                Set-WindowsReservedStorageState -State Enabled -ErrorAction Stop; Say '  예약된 저장소 다시 켬'
+                Set-WindowsReservedStorageState -State Enabled -ErrorAction Stop
+                Say "  예약된 저장소 다시 켬$(if ($rsOld) { ' (예전 버전 백업이라 적용 전 상태 기록이 없어 Windows 기본값인 켜짐으로 되돌림)' })"
             }
         } catch { Warn "예약된 저장소를 다시 켜지 못했어요: $($_.Exception.Message)" }
     }
@@ -2735,9 +2942,11 @@ function Undo-Terminal([string]$bk) {
     Copy-Item -LiteralPath $tf -Destination (Join-Path $bk 'terminal_settings.before_undo.json') -Force
     $hf = Join-Path $bk 'terminal_applied.sha256'
     $untouched = (Test-Path -LiteralPath $hf) -and ((Read-TextFile $hf).Trim() -eq (Get-FileHash -LiteralPath $tf -Algorithm SHA256).Hash)
+    # 예전 버전 백업: 비교할 기록이 없음. BeSffy 가 새로 만든 파일이었으면(원본 없음 + .created) 그대로 지움 (지금 파일은 위에서 백업 폴더에 남김)
+    if (-not (Test-Path -LiteralPath $hf) -and -not $hasOrig) { $untouched = $true }
     if ($untouched) {
         if ($hasOrig) { Copy-Item -LiteralPath $orig -Destination $tf -Force; Say '  터미널 설정 되돌림' }
-        else { Remove-Item -LiteralPath $tf -Force; Say '  만들었던 터미널 설정 지움' }
+        else { Remove-Item -LiteralPath $tf -Force; Say '  BeSffy 가 만들었던 터미널 설정 지움 (지운 파일은 백업 폴더에 terminal_settings.before_undo.json 으로 남김)' }
         return
     }
     $cur = Read-TerminalSettings
@@ -2763,9 +2972,96 @@ function Undo-Terminal([string]$bk) {
     Say '  터미널: 모든 탭 관리자 권한만 원래대로 (적용 뒤 바꾼 다른 설정은 그대로)'
 }
 
-# ============================== 실행 ==============================
-# 한 가지 작업(미리보기·적용·점검·되돌리기)을 처음부터 한 번 돌림. 돌릴 때마다 상태를 새로 읽고 보고서·로그를 따로 남김
-# 반환: 적용·되돌리기를 끝냈으면 $true (부른 쪽에서 '다시 시작할까요?'를 물음)
+# ============================== 메뉴 6: 예전 버전 정리 ==============================
+# 예전 버전 BeSffy 로 적용한 PC 에 남은 문제만 찾아서, 하나씩 물어보고 고침 (문제가 없으면 아무것도 안 바꿈)
+# 되돌리기·점검 쪽 수정은 새 BeSffy.cmd 를 쓰기만 하면 되므로 여기서 할 일이 없음
+function Invoke-LegacyFix {
+    Head '예전 버전 정리'
+    Say '  예전 버전 BeSffy 로 적용한 PC 에 남은 문제만 찾아서 고쳐요. 문제가 없는 항목은 건드리지 않아요.'
+    $history = Get-AppliedInfo
+    $changed = @()
+
+    # 1. 업데이트 잠금: 예전 예약 작업은 잠가 둔 동안 Defender 정의를 받지 않고, 예전 이름(LiteTools) 작업은 새 '업데이트 켜기'를 모름
+    Head '1. 업데이트 잠금'
+    $exp = "$((Get-RegValue $HKLM 'SOFTWARE\Microsoft\WindowsUpdate\UX\Settings' 'PauseUpdatesExpiryTime').Value)"
+    $newTask = Get-ScheduledTask -TaskPath $TaskPath -TaskName $TaskName -ErrorAction SilentlyContinue
+    $oldTask = Get-ScheduledTask -TaskPath $TaskPathOld -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not ($exp -eq $PauseEnd -or $newTask -or $oldTask)) { Say '  업데이트 잠금이 적용돼 있지 않아요. 할 일 없음.' }
+    else {
+        $why = @()
+        if ($oldTask) { $why += "예전 이름의 예약 작업($TaskPathOld$TaskName)이 남아 있어요 ('업데이트 켜기'를 눌러도 하루 안에 다시 잠가요)" }
+        $cur = Join-Path $script:ToolsDst 'WU-Pause.ps1'
+        $same = (Test-Path -LiteralPath $cur) -and ((Read-TextFile $cur).Trim() -eq (Get-WuBodies)['WU-Pause.ps1'].Trim())
+        if (-not $newTask -or -not $same) { $why += '예약 작업이 예전 방식이에요 (잠가 둔 동안 Defender 정의를 받지 않고, 하루 한 번만 다시 잠가요)' }
+        if ((Test-Path -LiteralPath $script:ToolsDstOld) -or (Get-RegValue $HKLM $FlagKeyOld 'UpdateMode').Exists) { $why += "예전 이름의 도구 폴더($($script:ToolsDstOld))나 상태 키(HKLM\$FlagKeyOld)가 남아 있어요 (지금은 안 써요)" }
+        if (-not $why.Count) { Say '  이미 새 방식이에요 (부팅 때·4시간마다 다시 잠그고 Defender 정의도 받음). 할 일 없음.' }
+        else {
+            foreach ($w in $why) { Say "  - $w" }
+            if (Ask '  업데이트 잠금 도구를 새 방식으로 바꿀까요? (지금 잠금·켜기 상태는 그대로 둬요)') {
+                $wuErr = $null
+                try { Install-WuTools } catch { $wuErr = "$($_.Exception.Message)".Trim() }
+                if ($wuErr) { Warn "업데이트 잠금 도구를 바꾸지 못했어요 ($wuErr). 다음 항목은 계속 확인해요." }
+                else {
+                    Say '  바꿨어요: 부팅 때와 매일 새벽 3시부터 4시간마다 다시 잠그고, 그때마다 Defender 정의도 받아요.'
+                    $changed += '업데이트 잠금 도구'
+                    if ((Get-DefenderState).Ok) {
+                        try { Update-MpSignature -ErrorAction Stop; Say '  Defender 정의를 지금 한 번 받았어요.' }
+                        catch { Warn "Defender 정의를 지금 받지 못했어요 ($("$($_.Exception.Message)".Trim())). 예약 작업이 다음에 다시 받아요." }
+                    } else { Say "  Defender 정의 받기: $(Get-DefenderUpdateText)" }
+                }
+            } else { Say '  그대로 뒀어요.' }
+        }
+    }
+
+    # 2. Internet Explorer 기능: 예전 버전이 지웠으면 Edge 의 IE 모드가 동작하지 않음
+    Head '2. Edge 의 IE 모드 (Internet Explorer 기능)'
+    $ie = $null; $capErr = $null
+    Write-Host '   (선택적 기능 목록을 확인하는 중이에요. 수십 초 걸릴 수 있어요)' -ForegroundColor DarkGray
+    try { $ie = @(Get-WindowsCapability -Online -ErrorAction Stop | Where-Object { $_.Name -like 'Browser.InternetExplorer*' }) | Select-Object -First 1 }
+    catch { $capErr = "$($_.Exception.Message)".Trim() }
+    if ($capErr) { Warn "선택적 기능 목록을 읽지 못해 IE 모드는 확인하지 못했어요: $capErr" }
+    elseif (-not $ie) { Say '  이 Windows 에는 Internet Explorer 기능이 없어요. 할 일 없음.' }
+    elseif ("$($ie.State)" -eq 'Installed') { Say '  설치돼 있어요 (Edge 의 IE 모드를 쓸 수 있음). 할 일 없음.' }
+    else {
+        Say "  지워져 있어요$(if ($history -and $history.Flags.SystemComponents) { ' (예전 BeSffy 의 시스템 구성요소 삭제가 지웠을 수 있어요)' }). 이게 없으면 Edge 의 IE 모드가 동작하지 않아요."
+        if (Ask '  다시 설치할까요? (인터넷에서 받아서 몇 분 걸릴 수 있어요. IE 모드를 쓰지 않으면 아니요)') {
+            Write-Host '   (설치하는 중이에요. 몇 분 걸릴 수 있어요)' -ForegroundColor DarkGray
+            try {
+                $r = Add-WindowsCapability -Online -Name $ie.Name -ErrorAction Stop
+                Say '  다시 설치했어요.'; $changed += 'IE 모드'
+                if ($r -and $r.RestartNeeded) { $script:FixRestart = $true; Say '  다시 시작하면 마저 적용돼요.' }
+            } catch { Warn "Internet Explorer 기능을 설치하지 못했어요 ($("$($_.Exception.Message)".Trim())). 업데이트를 잠가 둬서 받지 못했을 수 있어요. 바탕화면의 'Windows 업데이트 켜기'를 실행한 뒤 메뉴 6 을 다시 해 보세요." }
+        } else { Say '  그대로 뒀어요.' }
+    }
+
+    # 3. 다른 계정의 OneDrive: 예전 버전은 지금 계정만 보고 PC 전체에 동기화 막기를 걸었음
+    Head '3. 다른 계정의 OneDrive'
+    $pk = 'SOFTWARE\Policies\Microsoft\Windows\OneDrive'
+    $pol = Get-RegValue $HKLM $pk 'DisableFileSyncNGSC'
+    $others = @(Get-OtherOneDriveUsers)
+    if (-not ($pol.Exists -and "$($pol.Value)" -eq '1')) { Say '  OneDrive 동기화 막기가 걸려 있지 않아요. 할 일 없음.' }
+    elseif (-not $others.Count) { Say '  다른 계정에 OneDrive 폴더가 없어요. 할 일 없음.' }
+    else {
+        Say "  다른 계정($($others -join ', '))에 OneDrive 폴더가 있는데, PC 전체에 걸린 동기화 막기 때문에 그 계정의 OneDrive 가 동기화되지 않아요. 바탕 화면·문서 중 클라우드에만 있는 파일은 이 PC 에서 열 수 없어요."
+        if (Ask '  동기화 막기를 풀까요? (지금 계정의 OneDrive 는 지운 그대로예요. 그 계정에 OneDrive 가 없으면 Microsoft Store 나 onedrive.com 에서 다시 설치하면 돼요)') {
+            Remove-RegValueDirect $HKLM $pk 'DisableFileSyncNGSC'
+            if ((Get-RegValue $HKLM $pk 'DisableFileSyncNGSC').Exists) { Warn 'OneDrive 동기화 막기를 풀지 못했어요.' }
+            else {
+                Say '  풀었어요. 다른 계정에서 로그인하면 OneDrive 가 다시 동기화돼요.'; $changed += '다른 계정 OneDrive'
+                # 마지막 적용 기록에 표시: 점검이 '동기화 막기가 풀려 있음'으로 알리지 않게
+                $bks = @(Get-Backups)
+                if ($bks.Count) { Write-TextFile (Join-Path $bks[-1].FullName 'onedrive_sync_on.txt') "# 메뉴 6 에서 다른 계정을 위해 OneDrive 동기화 막기를 풂 ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))`r`n" }
+            }
+        } else { Say '  그대로 뒀어요.' }
+    }
+
+    Head '끝'
+    Say "  $(if ($changed.Count) { "고친 것: $($changed -join ', ')" } else { '바꾼 것 없음' })"
+    $file = Write-Report 'fix' '예전 버전 정리 결과'
+    Show-WarnSummary
+    Write-Host "`n결과 보고서: $file" -ForegroundColor Green
+}
+
 # ============================== 메뉴 5: 백그라운드 다시 켜기 ==============================
 # 적용으로 막힌 스토어 앱 중 골라서 다시 켬(또는 더 끔). 백그라운드 허용 목록 레지스트리 값 하나만 바꿈
 $AppPrivacyKey = 'SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'
@@ -2929,12 +3225,59 @@ function Invoke-StartupOn {
     Write-RegFile $f (Build-ApplyLines $items)
     $null = Import-Reg $f
     $bad = Test-RegApplied $items
+    # 마지막 적용 기록에 표시: 점검이 '그 뒤 다시 바뀜'으로 알리지 않게 (검색 색인의 search_on.txt 와 같음)
+    $bks = @(Get-Backups)
+    if ($bks.Count) {
+        $son = Join-Path $bks[-1].FullName 'startup_on.txt'
+        $prev = Read-NameList $son   # 변수에 먼저 받음 (@(Read-NameList) 은 목록이 한 덩어리로 들어감)
+        $ids = @(@($prev) + @($plan | ForEach-Object Id) | Where-Object { $_ } | Sort-Object -Unique)
+        Write-TextFile $son ((@("# 메뉴 5 로 다시 켠 시작 프로그램 ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))") + $ids) -join "`r`n")
+    }
     $sel = Read-StartupSelection
     if ($null -ne $sel) { Save-StartupSelection @($sel | Where-Object { @($plan | ForEach-Object Id) -notcontains $_.Id }) }
     Head '끝'
     Say "  다시 켰어요: $($plan.Count - $bad)개. 다음에 로그인할 때부터 자동으로 켜져요."
     Say '  다음 적용(메뉴 2) 때도 다시 끄지 않아요. 다시 끄려면 미리보기의 시작 프로그램 창에서 체크를 풀고 적용하세요.'
     $file = Write-Report 'startup' '시작 프로그램 다시 켜기 결과' @("다시 켬: $(($plan | ForEach-Object Label) -join ', ')")
+    Show-WarnSummary
+    Write-Host "`n결과 보고서: $file" -ForegroundColor Green
+}
+
+# ---- 메뉴 5 의 4: 잠금 화면 다시 켜기 ----
+# Lite26H2 이미지·BeSffy 적용이 넣은 '잠금 화면 표시 안 함' 정책 값(NoLockScreen) 하나만 지움. 백업이 없는 PC(Lite26H2 로 설치만 한 PC)도 됨
+function Test-LockScreenOff { $v = Get-RegValue $HKLM $LockKey 'NoLockScreen'; [bool]($v.Exists -and "$($v.Value)" -ne '0') }
+# 잠금 화면을 켜 둔 상태로 기록: 다음 적용 때 다시 끄지 않게 선택값을 바꾸고, 마지막 적용 기록에 표시 (점검이 '꺼져 있어야 함'이라고 하지 않게)
+function Set-LockScreenKept {
+    $o = Read-Options   # 선택값 파일이 있을 때만 바꿈 (Set-SearchKept 와 같은 이유). 바꿨으면 $true
+    if ($null -ne $o) { $o['LockScreenOff'] = $false; Save-Options $o }
+    $bks = @(Get-Backups)
+    if ($bks.Count) { Write-TextFile (Join-Path $bks[-1].FullName 'lockscreen_on.txt') "# 잠금 화면 켜 둠 ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))`r`n" }
+    return ($null -ne $o)
+}
+function Invoke-LockScreenOn {
+    Head '잠금 화면 다시 켜기'
+    $hist = Get-AppliedInfo
+    if (-not (Test-LockScreenOff)) {
+        Say '  잠금 화면은 이미 켜져 있어요.'
+        if ($hist -and $hist.Flags.LockScreenOff) { $null = Set-LockScreenKept; Say "  BeSffy 기록에도 '잠금 화면 켜 둠'으로 남겼어요. 이제 점검에서 꺼져 있어야 한다고 하지 않고, 다시 적용해도 끄지 않아요." }
+        return
+    }
+    Say '  지금: 꺼져 있음 (PC 를 켜거나 잠글 때 사진 화면 없이 바로 로그인 화면이 나와요)'
+    Say '  다시 켜면 잠금 화면(사진·시계·알림)이 먼저 나오고, 클릭하거나 키를 누르면 로그인 화면이 나와요.'
+    if (-not (Ask '  잠금 화면을 다시 켤까요?')) { Say '  취소했어요. 아무것도 바꾸지 않았어요.'; return }
+    try { Remove-RegValueDirect $HKLM $LockKey 'NoLockScreen'; $null = Remove-RegKeyIfEmpty $HKLM $LockKey } catch {}
+    if (Test-LockScreenOff) {
+        Warn "잠금 화면을 켜지 못했어요 ($HKLM\$LockKey NoLockScreen 값을 지우지 못함). 회사 PC 처럼 관리자가 정한 정책이면 여기서 바꿀 수 없어요."
+        $file = Write-Report 'lockscreen' '잠금 화면 다시 켜기 (실패)'; Show-WarnSummary; return
+    }
+    $kept = Set-LockScreenKept
+    Head '끝'
+    Say '  잠금 화면을 켰어요. 다음에 잠글 때(Windows 키 + L)나 다시 시작할 때부터 나와요.'
+    Say '  잠금 화면 사진은 설정 → 개인 설정 → 잠금 화면에서 고르세요 (사진·슬라이드 쇼).'
+    Say "  ('Windows 추천' 사진은 BeSffy 의 광고·추천 끄기 때문에 잘 안 바뀔 수 있어요)"
+    if ($kept) { Say '  다음에 적용(메뉴 2)을 해도 잠금 화면은 다시 끄지 않아요. 다시 끄려면 미리보기에서 "잠금 화면 끄기"를 체크하고 적용하세요.' }
+    else { Say '  나중에 적용(메뉴 1·2)할 때 "무엇을 적용할까요" 창에서 "잠금 화면 끄기" 체크를 풀어 두세요 (체크하면 다시 꺼요).' }
+    $file = Write-Report 'lockscreen' '잠금 화면 다시 켜기 결과'
     Show-WarnSummary
     Write-Host "`n결과 보고서: $file" -ForegroundColor Green
 }
@@ -2949,22 +3292,27 @@ function Invoke-Restore {
     Say "  1. 백그라운드 앱 다시 켜기 - 막힌 스토어 앱(서비스)을 프로그램별로 골라서 허용 (지금: $(if ($bgBlocked) { '스토어 앱 백그라운드 금지 걸림' } else { '금지 안 걸림' }))"
     Say "  2. 검색 색인 다시 켜기     - Windows 검색 색인(WSearch)을 원래대로 켬 (지금: $wsTxt)"
     Say "  3. 시작 프로그램 다시 켜기 - 로그인할 때 안 켜지게 해 둔 프로그램을 골라서 다시 켬"
+    Say "  4. 잠금 화면 다시 켜기     - 켤 때·잠글 때 잠금 화면(사진·시계)이 다시 나오게 (지금: $(if (Test-LockScreenOff) { '꺼져 있음' } else { '켜져 있음' }))"
     $c = "$(Read-Host '  번호를 고르세요 (Enter 는 메뉴로)')".Trim()
     switch ($c) {
         '1'     { Invoke-BgEdit }
         '2'     { Invoke-SearchOn }
         '3'     { Invoke-StartupOn }
+        '4'     { Invoke-LockScreenOn }
         default { Say '  아무것도 고르지 않았어요. 메뉴로 돌아가요.' }
     }
 }
 
+# ============================== 실행 ==============================
+# 한 가지 작업(미리보기·적용·점검·되돌리기)을 처음부터 한 번 돌림. 돌릴 때마다 상태를 새로 읽고 보고서·로그를 따로 남김
+# 반환: 적용·되돌리기를 끝냈으면 $true, 메뉴 6 은 IE 설치에 다시 시작이 필요하면 $true (부른 쪽에서 '다시 시작할까요?'를 물음)
 function Invoke-One([string]$RunMode) {
     $script:Mode = $RunMode
     $script:Out  = New-Object System.Collections.Generic.List[string]
     $script:Warn = New-Object System.Collections.Generic.List[string]
     $script:Stamp = New-Stamp
     $script:UserMismatch = $false
-    $script:ApplyDone = $false; $script:UndoDone = $false; $script:BgEditDone = $false; $script:SearchOnDone = $false
+    $script:ApplyDone = $false; $script:UndoDone = $false; $script:BgEditDone = $false; $script:SearchOnDone = $false; $script:FixRestart = $false
     Clear-AppxCache   # 작업마다 앱 목록을 새로 읽음
     $log = Join-Path $script:ReportDir "$($RunMode.ToLower())_$($script:Stamp).log"
     $tr = $false
@@ -2979,6 +3327,7 @@ function Invoke-One([string]$RunMode) {
             'Background' { Invoke-BgEdit }
             'Search'     { Invoke-SearchOn }
             'Restore'    { Invoke-Restore }
+            'Fix'        { Invoke-LegacyFix }
         }
     } catch {
         Write-Host "`n오류: $($_.Exception.Message)" -ForegroundColor Red
@@ -2989,7 +3338,7 @@ function Invoke-One([string]$RunMode) {
     } finally {
         if ($tr) { try { Stop-Transcript | Out-Null } catch {} }
     }
-    return [bool]($script:ApplyDone -or $script:UndoDone -or $script:BgEditDone)
+    return [bool]($script:ApplyDone -or $script:UndoDone -or $script:BgEditDone -or $script:FixRestart)
 }
 
 # 적용·되돌리기 뒤 다시 시작 물어보기. 지금 재시작이 어려우면 탐색기만 새로고침해서 일부 변화를 바로 보여줌
@@ -3008,7 +3357,7 @@ function Show-Menu {
     while ($true) {
         Write-Host ''
         Write-Host '============================================================' -ForegroundColor Cyan
-        Write-Host '  BeSffy  -  Best SFF Optimizer' -ForegroundColor Cyan
+        Write-Host "  BeSffy v$Version  -  Best SFF Optimizer" -ForegroundColor Cyan
         Write-Host '  이 PC 에 적용 / 점검 / 되돌리기' -ForegroundColor Cyan
         Write-Host "  $Credit  ·  MIT License" -ForegroundColor DarkGray
         Write-Host '============================================================' -ForegroundColor Cyan
@@ -3016,7 +3365,8 @@ function Show-Menu {
         Write-Host '  2. 적용             - 복원 지점·백업을 만든 뒤 고른 대로 적용'
         Write-Host '  3. 점검             - 적용한 것이 지금도 맞는지 확인 (아무것도 안 바꿈)'
         Write-Host '  4. 되돌리기         - 적용했던 것을 되돌림'
-        Write-Host '  5. 일부 옵션만 복구 - 막힌 백그라운드 앱, 검색 색인, 꺼 둔 시작 프로그램만 골라서 다시 켬'
+        Write-Host '  5. 일부 옵션만 복구 - 막힌 백그라운드 앱, 검색 색인, 꺼 둔 시작 프로그램, 잠금 화면만 골라서 다시 켬'
+        Write-Host '  6. 예전 버전 정리   - 예전 BeSffy 로 적용한 PC 에 남은 문제만 고침 (업데이트 잠금·IE 모드·다른 계정 OneDrive)'
         Write-Host '  q. 종료'
         Write-Host ''
         $c = (Read-Host '  번호를 고르세요 (종료는 q)').Trim()
@@ -3026,11 +3376,12 @@ function Show-Menu {
             '^3$'      { [void](Invoke-One 'Check') }
             '^4$'      { if (Invoke-One 'Undo')  { if (Request-Restart) { return } } }
             '^5$'      { if (Invoke-One 'Restore') { if (Ask "`n지금 다시 시작할까요? (다시 시작해야 확실히 적용돼요)") { Restart-Computer -Force; return } } }
-            '^[Qq]$'   { return }
+            '^6$'      { if (Invoke-One 'Fix') { if (Ask "`n지금 다시 시작할까요? (IE 모드를 마저 설치하려면 다시 시작해야 해요)") { Restart-Computer -Force; return } } }
+            '^[Qqㅂ]$' { return }   # 한글 입력 상태의 q = ㅂ
             '^$'       { }
-            default    { Write-Host "  '$c' 는 없는 선택이에요. 1~5 또는 q 를 누르세요." -ForegroundColor Yellow }
+            default    { Write-Host "  '$c' 는 없는 선택이에요. 1~6 또는 q 를 누르세요." -ForegroundColor Yellow }
         }
-        if ($c -match '^[1-5]$') { Write-Host ''; [void](Read-Host '  Enter 를 누르면 메뉴로 돌아가요') }
+        if ($c -match '^[1-6]$') { Write-Host ''; [void](Read-Host '  Enter 를 누르면 메뉴로 돌아가요') }
     }
 }
 
@@ -3043,8 +3394,73 @@ function Test-HereWritable {
     } catch { return $false }
 }
 
+# ============================== 자동 업데이트 ==============================
+# 실행하자마자(메뉴 전) GitHub 의 최신 Release 를 확인해서, 새 버전이 있으면 받을지 물어봄 (적용·되돌리기 중에는 확인하지 않음)
+# 받은 BeSffy.cmd 는 함께 받은 서명(BeSffy.cmd.sig)을 아래 공개 열쇠로 확인한 뒤에만 이 파일 자리에 바꿔 넣음.
+# 서명용 비공개 열쇠는 만든 사람 PC 에만 있어서, GitHub 계정이 털려도 서명 없는 파일로는 바뀌지 않음.
+# 바꿔 넣으면 종료 코드 77 로 끝내고, 실행기(.cmd 머리)가 새 파일을 처음부터 다시 실행함 (같은 창, 이미 관리자 권한)
+$UpdateRepo   = 'JIGAP-APPEM/BeSffy'
+$UpdateExit   = 77
+$UpdatePubKey = '<RSAKeyValue><Modulus>z0b41TVyEZ27vHYfQU2sOwB7cMg0o+Sz+L6eVrTyoM73EuUf6GlvrhvIcf+qMvgXP3eANCmP3FB7zLCsUDR/T72TpEWcc1dBdWjWzW+rUk1vA63cgUULWh+g643Za/43egGvHUMLp754QYgPUO3494lst8s+BybIqm8vv5BdFIdSxf4Ny1vMJhtbcqk9MzqcBAJFoe7dfiwpP5XV5QF0dQACZBjLvY0h4SyZSC0XMXwjiXMiwAmEoqfDK3CfrPxjQ5a4W6QfIzBOnojLz0IsBGmfbGuRyOTkYvyEtC8mscONeRF68rKfEUtH7L2JoEUdzuP7iGQBFAdFFGyLWTvBeft6aRQJUugtmQBsnVgqKDtbcdL++5NUfpfMJBbGVDgkopcN/AnI+quxr+eTZXg3r5KkupsTFTwbt0OV5RQKh1jo6xx4hD28eBU2bxwB9tbCbwxhESqnH5zE3lcwXoVgQPefy7h4B3AeBZS78Pnde7z2bc8WFu51p1Mw1cCm24oJ</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
+function Get-LatestRelease {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Invoke-RestMethod -Uri "https://api.github.com/repos/$UpdateRepo/releases/latest" -Headers @{ 'User-Agent' = 'BeSffy' } -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop
+}
+function Get-UrlBytes([string]$url) {
+    $wc = New-Object Net.WebClient
+    $wc.Headers['User-Agent'] = 'BeSffy'
+    try { return , $wc.DownloadData($url) } finally { $wc.Dispose() }   # , : 바이트 배열을 그대로 돌려줌 (안 붙이면 한 바이트씩 풀려 나감)
+}
+# 'v1.3' → [version] 1.3. 버전 모양이 아니면 $null
+function ConvertTo-AppVersion([string]$s) { $v = $null; if ([version]::TryParse(($s.Trim() -replace '^[vV]', ''), [ref]$v)) { $v } }
+# 서명 파일(Base64 한 줄)이 이 파일 내용의 SHA-256 서명(RSA)인지 공개 열쇠로 확인
+function Test-UpdateSignature([byte[]]$data, [byte[]]$sigFile) {
+    try {
+        $sig = [Convert]::FromBase64String([Text.Encoding]::ASCII.GetString($sigFile).Trim())
+        $rsa = try { New-Object Security.Cryptography.RSACng } catch { [Security.Cryptography.RSA]::Create() }
+        $rsa.FromXmlString($UpdatePubKey)
+        return [bool]$rsa.VerifyData($data, $sig, [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    } catch { return $false }
+}
+# 새 버전으로 바꿨으면 $true (부른 쪽이 종료 코드 77 로 끝냄). 확인 못 하거나 아니요면 지금 버전으로 계속
+function Invoke-UpdateCheck {
+    $self = "$env:BESFFY_SELF"
+    if ($self -notmatch '\.cmd$' -or -not (Test-Path -LiteralPath $self)) { return $false }   # .cmd 로 실행한 게 아니면(원본 .ps1 시험 등) 건너뜀
+    $cur = [version]$Version
+    Write-Host "`n  새 버전이 있는지 확인하는 중 (GitHub)..." -ForegroundColor DarkGray
+    try { $rel = Get-LatestRelease }
+    catch { Write-Host "  새 버전을 확인하지 못했어요 (인터넷 연결 확인). 지금 버전(v$Version)으로 계속해요." -ForegroundColor DarkGray; return $false }
+    $new = ConvertTo-AppVersion "$($rel.tag_name)"
+    if (-not $new -or $new -le $cur) { Write-Host "  최신 버전이에요 (v$Version)." -ForegroundColor DarkGray; return $false }
+    Write-Host "`n  새 버전이 있어요: v$new (지금 v$Version)" -ForegroundColor Cyan
+    foreach ($l in @("$($rel.body)" -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 10)) { Write-Host "    $l" }
+    if (-not (Ask '  받아서 새 버전으로 실행할까요? (아니요면 지금 버전으로 계속해요)')) { return $false }
+    $page = "$($rel.html_url)"
+    $a = @($rel.assets) | Where-Object { $_.name -eq 'BeSffy.cmd' } | Select-Object -First 1
+    $g = @($rel.assets) | Where-Object { $_.name -eq 'BeSffy.cmd.sig' } | Select-Object -First 1
+    if (-not $a -or -not $g) { Write-Host "  이 Release 에 BeSffy.cmd 나 서명 파일(BeSffy.cmd.sig)이 없어서 받지 않았어요. 직접 받아 주세요: $page" -ForegroundColor Yellow; return $false }
+    try { $data = Get-UrlBytes "$($a.browser_download_url)"; $sig = Get-UrlBytes "$($g.browser_download_url)" }
+    catch { Write-Host "  받지 못했어요 ($("$($_.Exception.Message)".Trim())). 지금 버전으로 계속해요." -ForegroundColor Yellow; return $false }
+    if (-not (Test-UpdateSignature $data $sig)) {
+        Write-Host "  받은 파일의 서명이 맞지 않아서 쓰지 않았어요 (파일이 바뀌었거나 깨졌을 수 있어요). 지금 버전으로 계속해요. 직접 받으려면: $page" -ForegroundColor Red
+        return $false
+    }
+    # 받은 파일 안의 버전이 지금보다 새로워야 바꿈 (예전 버전으로 되돌려 놓는 것과, 같은 버전을 계속 받는 것을 막음)
+    $fileVer = if ([Text.Encoding]::UTF8.GetString($data) -match "(?m)^\`$Version\s*=\s*'([0-9.]+)'") { ConvertTo-AppVersion $Matches[1] }
+    if (-not $fileVer -or $fileVer -le $cur) { Write-Host "  받은 파일의 버전($(if ($fileVer) { "v$fileVer" } else { '알 수 없음' }))이 지금보다 새롭지 않아서 바꾸지 않았어요." -ForegroundColor Yellow; return $false }
+    # 같은 폴더에 다 쓴 뒤 바꿔 넣음 (받다가 꺼져도 지금 파일은 그대로)
+    $tmp = "$self.new"
+    try { [IO.File]::WriteAllBytes($tmp, $data); Move-Item -LiteralPath $tmp -Destination $self -Force -ErrorAction Stop }
+    catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        Write-Host "  새 버전으로 바꾸지 못했어요 ($("$($_.Exception.Message)".Trim())). 지금 버전으로 계속해요." -ForegroundColor Yellow; return $false
+    }
+    Write-Host "  v$fileVer 로 바꿨어요. 새 버전으로 다시 시작해요..." -ForegroundColor Green
+    return $true
+}
+
 function Start-Main([string]$RunMode) {
-    try { $Host.UI.RawUI.WindowTitle = 'BeSffy - Best SFF Optimizer' } catch {}
+    try { $Host.UI.RawUI.WindowTitle = "BeSffy v$Version - Best SFF Optimizer" } catch {}
     # 단일 .cmd 가 창을 강제로 닫혀 지우지 못한, 하루 지난 임시 스크립트 찌꺼기 정리
     try {
         Get-ChildItem -LiteralPath $env:TEMP -Filter 'BeSffy_*.ps1' -File -ErrorAction SilentlyContinue |
@@ -3065,10 +3481,11 @@ function Start-Main([string]$RunMode) {
         if (-not (Ask '  그래도 계속할까요?')) { return }
     }
     New-Item -ItemType Directory -Force -Path $script:ReportDir, $script:BackupRoot | Out-Null
+    if (Invoke-UpdateCheck) { $script:Relaunch = $true; return }
     if ($RunMode -eq 'Menu') { Show-Menu; return }
     # 예전처럼 모드를 바로 준 경우 (1_Preview.cmd 등) 한 번만 돌리고 적용·되돌리기면 다시 시작 물어봄
     if (Invoke-One $RunMode) {
-        if ($RunMode -in 'Background', 'Restore') { if (Ask "`n지금 다시 시작할까요? (다시 시작해야 확실히 적용돼요)") { Restart-Computer -Force } }
+        if ($RunMode -in 'Background', 'Restore', 'Fix') { if (Ask "`n지금 다시 시작할까요? (다시 시작해야 확실히 적용돼요)") { Restart-Computer -Force } }
         else { [void](Request-Restart) }
     }
 }
@@ -3095,3 +3512,4 @@ if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProces
     [void](Read-Host 'Enter 를 누르면 닫혀요'); return
 }
 Start-Main $Mode
+if ($script:Relaunch) { exit $UpdateExit }   # 새 버전으로 바꿨음: 실행기가 새 파일로 다시 실행

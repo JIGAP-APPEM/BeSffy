@@ -1,0 +1,7 @@
+# 이 폴더에서 BeSffy.cmd 를 실행하면 생기는 파일 (이 PC 의 정보·백업이라 올리지 않음)
+backup/
+reports/
+regtool/
+selected_*.txt
+# 자동 업데이트가 새 버전을 받는 동안 잠깐 생기는 파일
+*.cmd.new
